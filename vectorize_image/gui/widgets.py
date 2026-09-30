@@ -179,8 +179,9 @@ class ZoomableGraphicsView(QGraphicsView):
         """Install (or, passing None, remove) a press/move/release/escape
         handler that takes over the left mouse button for something other
         than panning -- used for manual tracing and edit-point dragging.
-        `handler` needs on_move(scene_pos), on_press(scene_pos),
-        on_release(scene_pos), and on_escape() methods.
+        `handler` needs on_move(scene_pos), on_press(scene_pos, shift),
+        on_release(scene_pos), and on_escape() methods. `shift` is whether
+        the Shift key was held at press-time (for toggling a selection).
         """
         self._interaction_handler = handler
         self.setDragMode(QGraphicsView.NoDrag if handler else QGraphicsView.ScrollHandDrag)
@@ -192,7 +193,8 @@ class ZoomableGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event) -> None:
         if self._interaction_handler is not None and event.button() == Qt.LeftButton:
-            self._interaction_handler.on_press(self.mapToScene(event.position().toPoint()))
+            shift = bool(event.modifiers() & Qt.ShiftModifier)
+            self._interaction_handler.on_press(self.mapToScene(event.position().toPoint()), shift)
             return
         super().mousePressEvent(event)
 

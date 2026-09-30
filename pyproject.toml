@@ -26,3 +26,6 @@ vectorize-image-gui = "vectorize_image.gui.app:main"
 
 [tool.setuptools]
 packages = ["vectorize_image", "vectorize_image.gui"]
+
+[tool.setuptools.package-data]
+"vectorize_image.gui" = ["icons/*.svg"]

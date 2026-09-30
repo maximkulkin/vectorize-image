@@ -1,0 +1,200 @@
+Metadata-Version: 2.4
+Name: vectorize-image
+Version: 0.1.0
+Summary: Trace a two-tone raster image into an SVG using bezier curve fitting
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.22
+Requires-Dist: Pillow>=9.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Provides-Extra: gui
+Requires-Dist: PySide6>=6.5; extra == "gui"
+
+# vectorize-image
+
+A tool that traces a two-tone (black/white) raster image — PNG, JPEG, etc. —
+into an SVG made of cubic bezier curves, using a real curve-fitting algorithm
+rather than just outlining pixels. Includes a CLI and an optional PySide6 GUI
+for interactively tuning the settings (see [GUI](#gui) below).
+
+```
+$ vectorize-image logo.png -o logo.svg
+```
+
+## Install
+
+```
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+This installs the `vectorize-image` command (and it's also runnable as
+`python -m vectorize_image`).
+
+## Usage
+
+```
+vectorize-image INPUT [-o OUTPUT] [options]
+```
+
+By default, the output path is the input filename with its extension
+replaced by `.svg`. Use `-o -` to write the SVG to stdout instead.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--threshold` | auto (Otsu) | Grayscale cutoff in `[0, 255]`; pixels darker than this are ink. |
+| `--invert` | off | Treat *light* pixels as ink instead of dark ones. |
+| `--simplify-tolerance PX` | `1.0` | Douglas-Peucker tolerance for simplifying the traced pixel outline. |
+| `--corner-threshold DEGREES` | `45` | Turning angle above which a vertex is kept as a sharp corner instead of being smoothed into a curve. |
+| `--max-error PX` | `1.0` | Max allowed distance between the fitted bezier curves and the traced outline. Lower = more faithful, more curve segments. |
+| `--min-area PX2` | `2.0` | Discard traced regions smaller than this (speckle filtering). |
+| `--scale` | `1.0` | Scale factor applied to output coordinates. |
+| `--fill` | `black` | Fill color of the output shape. |
+| `--precision` | `2` | Decimal digits in output SVG coordinates. |
+
+Examples:
+
+```
+# Basic trace, auto threshold
+vectorize-image scan.png
+
+# White ink on a black background
+vectorize-image whiteboard.jpg --invert -o out.svg
+
+# Looser fit: fewer, smoother curves, less faithful to jagged pixel edges
+vectorize-image icon.png --max-error 2.5 --simplify-tolerance 1.5
+
+# Tighter fit: more curve segments, closer to the pixel outline
+vectorize-image icon.png --max-error 0.3 --simplify-tolerance 0.3
+```
+
+## GUI
+
+A PySide6 desktop app is included for interactively tuning the settings above
+while watching the result update live.
+
+```
+pip install -e ".[gui]"
+vectorize-image-gui [optional/path/to/image.png]
+```
+
+(or `python -m vectorize_image.gui.app`)
+
+It shows the original image and the current vector trace overlaid on the same
+canvas — drag the **vector opacity** slider to blend between them and spot
+exactly where the trace deviates from the source, and pick a high-contrast
+**overlay color** (default red) if the original art is dark. The sidebar
+exposes every vectorization setting from the table above (threshold, with an
+Auto/manual toggle; invert; simplify tolerance; corner threshold; max curve
+error; min area) as paired slider + spin-box controls. Changing any of them
+re-runs vectorization automatically, debounced by ~150ms and off the UI
+thread, so dragging a slider stays smooth even while it's recomputing.
+
+Check **Show lines and points** to overlay the actual fitted geometry on top
+of the filled trace: each contour's path as a line, on-curve anchor points
+(blue, where segments meet) and off-curve control points (orange, with a
+thin dashed handle back to their anchor) for genuinely curved segments —
+straight segments are drawn as a plain line with no control points, since
+there's no curve there to inspect. This is the most direct way to see what
+the curve fitter actually did: how many segments it used, where it placed
+corners, whether a handle looks unreasonably long. Lines and points are
+drawn at a constant on-screen size regardless of zoom, so they stay legible
+whether you're looking at the whole image or zoomed in on one corner.
+
+Canvas navigation, mouse and keyboard:
+
+| Action | Mouse | Keyboard |
+|---|---|---|
+| Zoom in/out | Wheel — zooms on the point under the cursor, so that point stays put on screen | `+`/`-` (or `Ctrl+=`/`Ctrl+-`, or the toolbar/View menu) — zooms on the view's center |
+| Pan | Click-drag | Arrow keys |
+| Reset | — | **View → Fit to Window** (`Ctrl+0`) |
+
+Zoom is clamped to a sane range (0.05x–40x) either way. Keyboard shortcuts
+apply once the canvas has focus, which it grabs automatically after loading
+an image.
+
+Use **File → Save Vector as SVG** to export the current result.
+
+## How it works
+
+The pipeline has six stages (see `vectorize_image/pipeline.py`):
+
+1. **Binarize** (`binarize.py`) — load the image, flatten transparency onto
+   white, convert to grayscale, and threshold it into a black/white bitmap.
+   If no `--threshold` is given, the cutoff is chosen automatically with
+   **Otsu's method** (maximizing between-class variance over the histogram).
+
+2. **Trace** (`tracing.py`) — walk the grid of corners *between* pixels
+   (the "crack" boundaries where the bitmap changes color) to extract every
+   closed contour as a pixel-accurate, axis-aligned polygon. This is the
+   same style of approach used by tools like potrace. Ambiguous
+   checkerboard ("saddle") points are resolved by treating the foreground as
+   4-connected, so diagonally-touching foreground pixels get separate loops
+   rather than merging. Multiple contours (shapes, holes, holes-in-shapes,
+   arbitrarily nested) fall out naturally as independent loops — orientation
+   is never tracked, since each contour's fill role is resolved later by the
+   `evenodd` fill rule rather than by winding direction.
+
+3. **Simplify & find corners** (`simplify.py`) — reduce the staircase-shaped
+   traced polygon with the **Douglas-Peucker algorithm**, then compute the
+   turning angle at each remaining vertex. Vertices turning sharper than
+   `--corner-threshold` are treated as true corners; the closed polygon is
+   cut into open point-chains at those corners so each chain can be curve-fit
+   independently, which preserves an honest cusp wherever chains meet. If a
+   shape has no sharp corners at all (e.g. a circle), one seam is forced at
+   the point of maximum curvature purely so the loop can be treated as an
+   open chain — this doesn't introduce a visible corner in practice.
+
+4. **Fit bezier curves** (`curve_fit.py`) — this is the core "bezier curve
+   fitting algorithm": each point chain is fit with a sequence of cubic
+   beziers using **Philip J. Schneider's curve-fitting algorithm**
+   (*Graphics Gems*, 1990):
+   - Parameterize points by cumulative chord length.
+   - Fit one cubic bezier by least squares (holding the endpoints fixed and
+     using estimated tangent directions, which reduces to a small 2x2 linear
+     system for the two interior control points).
+   - If the fit's max error exceeds `--max-error`, refine the parameterization
+     with a few rounds of Newton-Raphson root-finding and refit.
+   - If it's still not good enough, split the chain at its worst point and
+     recursively fit each half.
+
+   The least-squares step is guarded against the classic failure mode of
+   this algorithm: when a chain has very few interior points or
+   near-parallel tangents, the linear system can become ill-conditioned and
+   produce wildly oversized control points. Solutions outside a sane
+   multiple of the chord length fall back to a simple heuristic instead.
+
+5. **Group into shapes** (`simplify.compute_shape_roots`) — figure out which
+   contours are nested inside which others (a hole inside an outer boundary,
+   an island inside that hole, and so on) by containment, and group each
+   such family under its top-level ancestor. This keeps a shape and its own
+   holes together, while unrelated shapes elsewhere in the image end up in
+   different groups.
+
+6. **Emit SVG** (`svgwrite.py`) — each group becomes its own `<path
+   id="shapeN">`, so independent shapes in the source image are independent,
+   individually selectable/styleable elements in the output, rather than one
+   big combined path. A shape's own holes stay inside its single path,
+   rendered with `fill-rule="evenodd"` so they punch out correctly
+   regardless of winding direction. Any bezier segment whose control points
+   are (numerically) exactly on the chord is written as a plain line (`L`)
+   instead of a curve (`C`) for a cleaner file.
+
+## Limitations
+
+- Designed for two-tone art (line drawings, logos, text, scanned documents),
+  not photographic color images.
+- The tracer is pure Python/NumPy; very large images (many megapixels) will
+  be noticeably slower than a compiled tool like potrace. Downscale first if
+  needed.
+- Output is a single flat color — no color quantization or multi-layer
+  tracing.
+
+## Tests
+
+```
+pip install -e ".[dev,gui]"  # gui is optional; its tests auto-skip if PySide6 isn't installed
+pytest
+```

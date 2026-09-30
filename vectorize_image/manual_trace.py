@@ -98,6 +98,8 @@ class ManualTraceModel:
         self._contours: list[np.ndarray] = []
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
+        self._move_node_originals: dict[int, np.ndarray] = {}
+        self._move_control_originals: dict[tuple, np.ndarray] = {}
 
     # ------------------------------------------------------------ setup
 
@@ -391,6 +393,48 @@ class ManualTraceModel:
                     best_handle = ("control", seg_idx, which)
         return best_handle
 
+    def find_segment_near(self, pos: np.ndarray, max_dist: float, samples: int = 21) -> int | None:
+        """The segment whose curve passes closest to `pos`, within
+        max_dist, approximated by sampling each bezier -- for Curves and
+        Contours work mode hit-testing, where the click target is the
+        curve itself rather than one of its points.
+        """
+        pos = np.asarray(pos, dtype=float)
+        best_idx, best_dist = None, max_dist
+        ts = np.linspace(0.0, 1.0, samples)
+        for i, seg in enumerate(self.segments):
+            for t in ts:
+                point = curve_fit._q(seg.bezier, float(t))
+                dist = float(np.linalg.norm(point - pos))
+                if dist <= best_dist:
+                    best_dist = dist
+                    best_idx = i
+        return best_idx
+
+    def connected_component(self, node_id: int) -> tuple[set[int], set[int]]:
+        """Every node id and segment index transitively reachable from
+        node_id -- a whole contour, open or closed, for Contours work mode.
+        Empty sets if node_id doesn't exist (e.g. a stale selection after
+        an edit elsewhere removed it).
+        """
+        if node_id not in self.nodes:
+            return set(), set()
+        nodes = {node_id}
+        segments: set[int] = set()
+        frontier = [node_id]
+        while frontier:
+            current = frontier.pop()
+            for i, seg in enumerate(self.segments):
+                if i in segments:
+                    continue
+                if seg.start == current or seg.end == current:
+                    segments.add(i)
+                    other = seg.other(current)
+                    if other not in nodes:
+                        nodes.add(other)
+                        frontier.append(other)
+        return nodes, segments
+
     def get_handle_position(self, handle: tuple) -> np.ndarray:
         if handle[0] == "anchor":
             return self.nodes[handle[1]]
@@ -426,6 +470,226 @@ class ManualTraceModel:
             if seg.end == node_id:
                 seg.bezier[3] = new_pos
                 seg.bezier[2] = seg.bezier[2] + delta
+
+    # ---------------------------------------------------------- selection
+
+    def resolve_selection(self, mode: str, items) -> tuple[set[int], set[tuple], set[int]]:
+        """Expand a work-mode-specific selection into the concrete graph
+        pieces it covers: (anchor node ids, standalone control-point
+        handles, segment indices). Used by move, delete, and by the GUI
+        for highlighting.
+
+        - "points": items are handles. Anchors go straight into the node
+          set; a selected control point only becomes "standalone" (kept
+          separate, since it isn't already covered by a moving/deleting
+          anchor) if its own segment's owning anchor isn't also selected.
+        - "curves": items are segment indices; resolves to those segments
+          plus both endpoints of each (so moving/deleting a curve carries
+          its anchors, keeping the path connected -- see `_move_anchor`).
+        - "contours": items are representative node ids; resolves to the
+          full connected component (open or closed) of each.
+        """
+        if mode == "points":
+            anchors = {item[1] for item in items if item[0] == "anchor"}
+            standalone = set()
+            for item in items:
+                if item[0] != "control":
+                    continue
+                _, seg_idx, which = item
+                if not (0 <= seg_idx < len(self.segments)):
+                    continue
+                seg = self.segments[seg_idx]
+                owner = seg.start if which == 1 else seg.end
+                if owner not in anchors:
+                    standalone.add(item)
+            return anchors, standalone, set()
+
+        if mode == "curves":
+            seg_indices = {i for i in items if 0 <= i < len(self.segments)}
+            nodes = set()
+            for i in seg_indices:
+                seg = self.segments[i]
+                nodes.add(seg.start)
+                nodes.add(seg.end)
+            return nodes, set(), seg_indices
+
+        if mode == "contours":
+            nodes: set[int] = set()
+            segs: set[int] = set()
+            for rep in items:
+                n, s = self.connected_component(rep)
+                nodes |= n
+                segs |= s
+            return nodes, set(), segs
+
+        return set(), set(), set()
+
+    def same_selection_entry(self, mode: str, existing: set, hit) -> object | None:
+        """Which member of `existing` (if any) represents the same thing as
+        `hit`. For points/curves, items are already the atomic unit, so
+        this is just membership -- but two different clicks on the same
+        contour (in Contours mode) can hit different representative node
+        ids for the *same* connected component, so a plain `in` check would
+        fail to recognize it's already selected. Used to make click-to-
+        toggle and click-to-keep-group-selection behave correctly.
+        """
+        if hit is None:
+            return None
+        if mode != "contours":
+            return hit if hit in existing else None
+        hit_nodes, _ = self.connected_component(hit)
+        for rep in existing:
+            if rep in hit_nodes:
+                return rep
+        return None
+
+    def begin_move(self, mode: str, items) -> None:
+        """Snapshot original positions of a resolved selection, before a
+        live drag. Call once when the drag starts, then `apply_move` on
+        each subsequent frame with the total delta since then -- applying
+        to the *original* snapshot each time (not accumulating incremental
+        deltas) keeps repeated calls exact and idempotent.
+        """
+        nodes, controls, _ = self.resolve_selection(mode, items)
+        self._move_node_originals = {n: self.nodes[n].copy() for n in nodes}
+        self._move_control_originals = {c: self.segments[c[1]].bezier[c[2]].copy() for c in controls}
+
+    def apply_move(self, delta: np.ndarray) -> None:
+        """Move everything captured by the last `begin_move` by `delta`
+        (relative to the snapshot, not the current position). A no-op if
+        nothing was captured (empty selection). Doesn't checkpoint itself --
+        same convention as `move_handle`.
+        """
+        delta = np.asarray(delta, dtype=float)
+        for node_id, original in self._move_node_originals.items():
+            if node_id in self.nodes:
+                self._move_anchor(node_id, original + delta)
+        for handle, original in self._move_control_originals.items():
+            _, seg_idx, which = handle
+            if seg_idx < len(self.segments):
+                self.segments[seg_idx].bezier[which] = original + delta
+
+    def delete_selection(self, mode: str, items) -> bool:
+        """Remove a resolved selection as one undo step. Points mode only
+        deletes anchors -- a lone control point isn't an independent,
+        deletable thing, just a handle for reshaping its curve via move --
+        removing an anchor takes its incident segments with it (the path
+        becomes open there; no attempt is made to bridge the gap with a
+        new curve). Curves mode deletes whole segments, disconnecting
+        their endpoints but leaving the endpoints themselves. Contours mode
+        deletes every node and segment in the selected connected
+        components. Returns False (no-op, nothing pushed to the undo
+        stack) if the selection has nothing actually deletable in it.
+        """
+        if mode == "points":
+            anchors = {item[1] for item in items if item[0] == "anchor"}
+            if not anchors:
+                return False
+            self._push_undo()
+            for node_id in anchors:
+                self._detach_node(node_id)
+            return True
+
+        if mode == "curves":
+            seg_indices = {i for i in items if 0 <= i < len(self.segments)}
+            if not seg_indices:
+                return False
+            self._push_undo()
+            for i in sorted(seg_indices, reverse=True):
+                del self.segments[i]
+            return True
+
+        if mode == "contours":
+            nodes, _, seg_indices = self.resolve_selection(mode, items)
+            if not nodes and not seg_indices:
+                return False
+            self._push_undo()
+            for i in sorted(seg_indices, reverse=True):
+                del self.segments[i]
+            for node_id in nodes:
+                if node_id in self.nodes:
+                    del self.nodes[node_id]
+                    del self.node_contour[node_id]
+            if self.active_node in nodes:
+                self.active_node = None
+            return True
+
+        return False
+
+    def _detach_node(self, node_id: int) -> None:
+        """Remove a node and every segment still attached to it."""
+        seg_indices = [i for i, s in enumerate(self.segments) if s.start == node_id or s.end == node_id]
+        for i in sorted(seg_indices, reverse=True):
+            del self.segments[i]
+        if node_id in self.nodes:
+            del self.nodes[node_id]
+            del self.node_contour[node_id]
+        if self.active_node == node_id:
+            self.active_node = None
+
+    def items_in_box(self, mode: str, corner1, corner2) -> set:
+        """Every item of `mode`'s granularity that overlaps the axis-aligned
+        box spanned by the two corners at all -- a segment or contour need
+        only pass through the box, not lie entirely inside it, matching how
+        marquee selection works in most vector editors."""
+        (x0, y0), (x1, y1) = corner1, corner2
+        xmin, xmax = sorted((x0, x1))
+        ymin, ymax = sorted((y0, y1))
+
+        def predicate(pos) -> bool:
+            return xmin <= pos[0] <= xmax and ymin <= pos[1] <= ymax
+
+        return self._items_matching(mode, predicate)
+
+    def items_in_circle(self, mode: str, center, radius: float) -> set:
+        """Every item of `mode`'s granularity that overlaps a circle -- the
+        "paint select" brush -- centered at `center` with the given radius.
+        Same any-overlap semantics as items_in_box."""
+        center = np.asarray(center, dtype=float)
+
+        def predicate(pos) -> bool:
+            return float(np.linalg.norm(np.asarray(pos, dtype=float) - center)) <= radius
+
+        return self._items_matching(mode, predicate)
+
+    def _items_matching(self, mode: str, predicate) -> set:
+        if mode == "points":
+            hits = set()
+            for node_id, pos in self.nodes.items():
+                if predicate(pos):
+                    hits.add(("anchor", node_id))
+            for seg_idx, seg in enumerate(self.segments):
+                for which in (1, 2):
+                    if predicate(seg.bezier[which]):
+                        hits.add(("control", seg_idx, which))
+            return hits
+
+        if mode == "curves":
+            return {i for i, seg in enumerate(self.segments) if self._segment_matches(seg, predicate)}
+
+        if mode == "contours":
+            hit_nodes = {node_id for node_id, pos in self.nodes.items() if predicate(pos)}
+            for seg in self.segments:
+                if self._segment_matches(seg, predicate):
+                    hit_nodes.add(seg.start)
+                    hit_nodes.add(seg.end)
+            reps: set[int] = set()
+            covered: set[int] = set()
+            for node_id in hit_nodes:
+                if node_id in covered:
+                    continue
+                nodes, _ = self.connected_component(node_id)
+                covered |= nodes
+                reps.add(node_id)
+            return reps
+
+        return set()
+
+    @staticmethod
+    def _segment_matches(seg: Segment, predicate) -> bool:
+        if predicate(seg.bezier[0]) or predicate(seg.bezier[3]):
+            return True
+        return any(predicate(curve_fit._q(seg.bezier, t)) for t in np.linspace(0.05, 0.95, 19))
 
     # -------------------------------------------------------- extraction
 

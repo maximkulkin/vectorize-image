@@ -62,9 +62,10 @@ DIAMOND_CORNERS = [(75, 10), (140, 75), (75, 140), (10, 75)]
 
 def test_switching_to_trace_tool_updates_visibility_and_settings(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
 
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
 
     assert window._tool == "trace"
     assert window.manual_group.isVisible()
@@ -83,10 +84,11 @@ def test_switching_to_trace_tool_updates_visibility_and_settings(window, diamond
 
 def test_switching_back_to_auto_restores_settings_and_revectorizes(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
 
-    window.auto_tool_radio.setChecked(True)
+    window.auto_tool_action.setChecked(True)
 
     assert window._tool == "auto"
     assert window.vector_item.isVisible()
@@ -98,8 +100,9 @@ def test_switching_back_to_auto_restores_settings_and_revectorizes(window, diamo
 
 def test_clicking_around_a_shape_and_closing_produces_a_closed_loop(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _trace_polygon(window, DIAMOND_CORNERS)
@@ -121,8 +124,9 @@ def test_fitted_segments_stay_close_to_the_actual_edge(window, diamond_path):
     simplified before being used for snapping/fitting.
     """
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _trace_polygon(window, DIAMOND_CORNERS)
@@ -139,8 +143,9 @@ def test_fitted_segments_stay_close_to_the_actual_edge(window, diamond_path):
 
 def test_escape_then_resume_continues_the_same_chain(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _click(window, *DIAMOND_CORNERS[0])
@@ -163,8 +168,9 @@ def test_escape_then_resume_continues_the_same_chain(window, diamond_path):
 
 def test_escape_right_after_starting_discards_the_orphan_point(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _click(window, *DIAMOND_CORNERS[0])
@@ -177,8 +183,9 @@ def test_escape_right_after_starting_discards_the_orphan_point(window, diamond_p
 
 def test_manually_tracing_a_hole_groups_with_its_outer_shape(window, donut_path):
     window._load_image(donut_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _trace_polygon(window, [(50, 10), (90, 50), (50, 90), (10, 50)])
@@ -193,8 +200,9 @@ def test_manually_tracing_a_hole_groups_with_its_outer_shape(window, donut_path)
 
 def test_save_svg_in_manual_mode_exports_closed_loops(window, diamond_path, tmp_path, monkeypatch):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
     _trace_polygon(window, DIAMOND_CORNERS)
 
@@ -212,8 +220,9 @@ def test_save_svg_in_manual_mode_exports_closed_loops(window, diamond_path, tmp_
 
 def test_save_disabled_in_manual_mode_until_a_loop_closes(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
     assert not window.save_action.isEnabled()
 
@@ -237,8 +246,9 @@ def test_hovering_near_an_open_point_before_starting_highlights_it_too(window, d
     """Even with no chain in progress, hovering near a dangling point should
     show it's resumable -- not just after the user has already clicked."""
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
 
     _click(window, *DIAMOND_CORNERS[0])
     _move(window, *DIAMOND_CORNERS[1])
@@ -256,8 +266,9 @@ def test_hovering_near_an_open_point_before_starting_highlights_it_too(window, d
 
 def test_hovering_near_an_open_point_sets_the_snap_highlight(window, diamond_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _click(window, *DIAMOND_CORNERS[0])
@@ -274,8 +285,9 @@ def test_hovering_near_an_open_point_sets_the_snap_highlight(window, diamond_pat
 
 def test_loading_a_new_image_clears_manual_trace(window, diamond_path, donut_path):
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
     _trace_polygon(window, DIAMOND_CORNERS)
     assert window.manual_model.closed_loops()
 
@@ -298,8 +310,9 @@ def test_hover_preview_updates_on_plain_mouse_movement_with_no_button_held(windo
     from PySide6.QtTest import QTest
 
     window._load_image(diamond_path)
+    window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
-    window.trace_tool_radio.setChecked(True)
+    window.trace_tool_action.setChecked(True)
 
     assert window.view.hasMouseTracking()
     assert window.view.viewport().hasMouseTracking()

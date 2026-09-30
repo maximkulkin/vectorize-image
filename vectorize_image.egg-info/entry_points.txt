@@ -1,0 +1,5 @@
+[console_scripts]
+vectorize-image = vectorize_image.cli:main
+
+[gui_scripts]
+vectorize-image-gui = vectorize_image.gui.app:main

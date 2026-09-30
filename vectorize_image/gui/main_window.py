@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QByteArray, QRectF, Qt, QTimer, QThreadPool
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -18,7 +20,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QSlider,
     QSplitter,
     QVBoxLayout,
@@ -35,6 +36,7 @@ from .worker import VectorizeTask, WorkerSignals
 DEBOUNCE_MS = 150
 MANUAL_SNAP_RADIUS_PX = 12.0
 MANUAL_EDGE_SIMPLIFY_TOLERANCE = 1.0
+PAINT_SELECT_DEFAULT_RADIUS_PX = 30.0
 
 TRACE_HINT = (
     "Click to place a point. Move the cursor to preview a curve snapped to "
@@ -47,6 +49,14 @@ EDIT_HINT = (
     "to reshape the curve it's on -- it updates live as you drag. Esc "
     "cancels a drag in progress."
 )
+
+
+_ICONS_DIR = Path(__file__).resolve().parent / "icons"
+
+
+def _icon(name: str) -> QIcon:
+    """Loads a toolbar icon from vectorize_image/gui/icons/<name>.svg."""
+    return QIcon(str(_ICONS_DIR / f"{name}.svg"))
 
 
 class _InteractionAdapter:
@@ -89,7 +99,16 @@ class MainWindow(QMainWindow):
         self._overlay_color = QColor(DEFAULTS["overlay_color"])
         self._tool = "auto"  # "auto", "trace", or "edit"
         self.manual_model = ManualTraceModel()
-        self._edit_drag_handle: tuple | None = None
+        self._selection_mode = "points"  # "points", "curves", or "contours" -- edit tool only
+        self._selection: set = set()
+        self._select_tool = "move"  # "move", "box", or "paint" -- edit tool only
+        self._edit_drag_origin: tuple | None = None  # press position, for computing a drag's delta
+        self._edit_drag_checkpointed = False  # lazy: only checkpoint once actual movement happens
+        self._box_select_origin: tuple | None = None
+        self._box_select_shift = False
+        self._paint_active = False
+        self._paint_press_selection: set | None = None
+        self._last_edit_pos: tuple | None = None
 
         self.threadpool = QThreadPool.globalInstance()
         self.signals = WorkerSignals()
@@ -119,34 +138,109 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Open an image to get started.")
 
     def _build_actions_and_menus(self) -> None:
-        open_action = QAction("&Open Image...", self)
+        open_action = QAction(_icon("open"), "&Open Image...", self)
         open_action.setShortcut(QKeySequence.Open)
         open_action.triggered.connect(self._open_image)
 
-        self.save_action = QAction("&Save Vector as SVG...", self)
+        self.save_action = QAction(_icon("save"), "&Save Vector as SVG...", self)
         self.save_action.setShortcut(QKeySequence.Save)
         self.save_action.setEnabled(False)
         self.save_action.triggered.connect(self._save_svg)
 
-        self.undo_action = QAction("&Undo", self)
+        self.undo_action = QAction(_icon("undo"), "&Undo", self)
         self.undo_action.setShortcut(QKeySequence.Undo)
         self.undo_action.setEnabled(False)
         self.undo_action.triggered.connect(self._undo)
 
-        self.redo_action = QAction("&Redo", self)
+        self.redo_action = QAction(_icon("redo"), "&Redo", self)
         self.redo_action.setShortcut(QKeySequence.Redo)
         self.redo_action.setEnabled(False)
         self.redo_action.triggered.connect(self._redo)
 
-        fit_action = QAction("&Fit to Window", self)
+        self.delete_action = QAction("&Delete Selection", self)
+        self.delete_action.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
+        self.delete_action.setEnabled(False)
+        self.delete_action.triggered.connect(self._delete_selection)
+
+        self.auto_tool_action = QAction(_icon("auto"), "&Automatic", self)
+        self.auto_tool_action.setCheckable(True)
+        self.auto_tool_action.setChecked(True)
+        self.auto_tool_action.setToolTip("Automatic tracing")
+        self.trace_tool_action = QAction(_icon("trace"), "&Manual Trace", self)
+        self.trace_tool_action.setCheckable(True)
+        self.trace_tool_action.setToolTip("Manual Trace: click to place points, snapped to the nearest edge")
+        self.edit_tool_action = QAction(_icon("edit"), "&Edit", self)
+        self.edit_tool_action.setCheckable(True)
+        self.edit_tool_action.setToolTip("Edit: select and move or delete points, curves, or contours")
+
+        self._tool_action_group = QActionGroup(self)
+        self._tool_action_group.setExclusive(True)
+        for action in (self.auto_tool_action, self.trace_tool_action, self.edit_tool_action):
+            self._tool_action_group.addAction(action)
+        self.auto_tool_action.toggled.connect(lambda checked: checked and self._set_tool("auto"))
+        self.trace_tool_action.toggled.connect(lambda checked: checked and self._set_tool("trace"))
+        self.edit_tool_action.toggled.connect(lambda checked: checked and self._set_tool("edit"))
+
+        self.points_mode_action = QAction(_icon("points"), "&Points", self)
+        self.points_mode_action.setCheckable(True)
+        self.points_mode_action.setChecked(True)
+        self.points_mode_action.setShortcut(QKeySequence(Qt.Key_1))
+        self.points_mode_action.setToolTip("Select points (1)")
+        self.curves_mode_action = QAction(_icon("curves"), "&Curves", self)
+        self.curves_mode_action.setCheckable(True)
+        self.curves_mode_action.setShortcut(QKeySequence(Qt.Key_2))
+        self.curves_mode_action.setToolTip("Select curves (2)")
+        self.contours_mode_action = QAction(_icon("contours"), "C&ontours", self)
+        self.contours_mode_action.setCheckable(True)
+        self.contours_mode_action.setShortcut(QKeySequence(Qt.Key_3))
+        self.contours_mode_action.setToolTip("Select contours (3)")
+
+        self._selection_mode_actions = (
+            self.points_mode_action,
+            self.curves_mode_action,
+            self.contours_mode_action,
+        )
+        self._selection_action_group = QActionGroup(self)
+        self._selection_action_group.setExclusive(True)
+        for action in self._selection_mode_actions:
+            self._selection_action_group.addAction(action)
+        self.points_mode_action.toggled.connect(lambda c: c and self._set_selection_mode("points"))
+        self.curves_mode_action.toggled.connect(lambda c: c and self._set_selection_mode("curves"))
+        self.contours_mode_action.toggled.connect(lambda c: c and self._set_selection_mode("contours"))
+
+        self.move_select_action = QAction(_icon("select_move"), "&Move", self)
+        self.move_select_action.setCheckable(True)
+        self.move_select_action.setChecked(True)
+        self.move_select_action.setToolTip("Move: click to select, drag a selected item to move it")
+        self.box_select_action = QAction(_icon("select_box"), "&Box Select", self)
+        self.box_select_action.setCheckable(True)
+        self.box_select_action.setToolTip("Box Select: drag a rectangle to select anything it touches")
+        self.paint_select_action = QAction(_icon("select_paint"), "&Paint Select", self)
+        self.paint_select_action.setCheckable(True)
+        self.paint_select_action.setToolTip("Paint Select: hold and drag a brush circle to select anything it touches")
+
+        self._select_tool_actions = (
+            self.move_select_action,
+            self.box_select_action,
+            self.paint_select_action,
+        )
+        self._select_tool_action_group = QActionGroup(self)
+        self._select_tool_action_group.setExclusive(True)
+        for action in self._select_tool_actions:
+            self._select_tool_action_group.addAction(action)
+        self.move_select_action.toggled.connect(lambda c: c and self._set_select_tool("move"))
+        self.box_select_action.toggled.connect(lambda c: c and self._set_select_tool("box"))
+        self.paint_select_action.toggled.connect(lambda c: c and self._set_select_tool("paint"))
+
+        fit_action = QAction(_icon("fit"), "&Fit to Window", self)
         fit_action.setShortcut("Ctrl+0")
         fit_action.triggered.connect(self._fit_view)
 
-        zoom_in_action = QAction("Zoom &In", self)
+        zoom_in_action = QAction(_icon("zoom_in"), "Zoom &In", self)
         zoom_in_action.setShortcuts([QKeySequence.ZoomIn, QKeySequence(Qt.Key_Plus), QKeySequence(Qt.Key_Equal)])
         zoom_in_action.triggered.connect(lambda: self.view.zoom_in())
 
-        zoom_out_action = QAction("Zoom &Out", self)
+        zoom_out_action = QAction(_icon("zoom_out"), "Zoom &Out", self)
         zoom_out_action.setShortcuts([QKeySequence.ZoomOut, QKeySequence(Qt.Key_Minus)])
         zoom_out_action.triggered.connect(lambda: self.view.zoom_out())
 
@@ -163,6 +257,8 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.delete_action)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(zoom_in_action)
@@ -175,10 +271,27 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
-        toolbar.addSeparator()
-        toolbar.addAction(zoom_in_action)
-        toolbar.addAction(zoom_out_action)
-        toolbar.addAction(fit_action)
+        toolbar.addAction(self.delete_action)
+
+        view_toolbar = self.addToolBar("View")
+        view_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        view_toolbar.addAction(zoom_in_action)
+        view_toolbar.addAction(zoom_out_action)
+        view_toolbar.addAction(fit_action)
+
+        self.addToolBarBreak()
+        tools_toolbar = self.addToolBar("Tools")
+        tools_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        tools_toolbar.addAction(self.auto_tool_action)
+        tools_toolbar.addAction(self.trace_tool_action)
+        tools_toolbar.addAction(self.edit_tool_action)
+        self._selection_toolbar_separator = tools_toolbar.addSeparator()
+        for action in self._selection_mode_actions:
+            tools_toolbar.addAction(action)
+        self._select_toolbar_separator = tools_toolbar.addSeparator()
+        for action in self._select_tool_actions:
+            tools_toolbar.addAction(action)
+        self._set_selection_actions_visible(False)
 
     def _build_canvas(self) -> QWidget:
         self.scene = QGraphicsScene(self)
@@ -209,7 +322,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(sidebar)
         layout.setAlignment(Qt.AlignTop)
 
-        layout.addWidget(self._build_mode_group())
         layout.addWidget(self._build_manual_group())
         layout.addWidget(self._build_vectorization_group())
         layout.addWidget(self._build_display_group())
@@ -221,21 +333,6 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return sidebar
 
-    def _build_mode_group(self) -> QGroupBox:
-        group = QGroupBox("Tool")
-        row = QHBoxLayout(group)
-        self.auto_tool_radio = QRadioButton("Automatic")
-        self.auto_tool_radio.setChecked(True)
-        self.trace_tool_radio = QRadioButton("Manual Trace")
-        self.edit_tool_radio = QRadioButton("Edit Points")
-        row.addWidget(self.auto_tool_radio)
-        row.addWidget(self.trace_tool_radio)
-        row.addWidget(self.edit_tool_radio)
-        self.auto_tool_radio.toggled.connect(lambda checked: checked and self._set_tool("auto"))
-        self.trace_tool_radio.toggled.connect(lambda checked: checked and self._set_tool("trace"))
-        self.edit_tool_radio.toggled.connect(lambda checked: checked and self._set_tool("edit"))
-        return group
-
     def _build_manual_group(self) -> QGroupBox:
         self.manual_group = QGroupBox("Manual Trace")
         layout = QVBoxLayout(self.manual_group)
@@ -243,6 +340,15 @@ class MainWindow(QMainWindow):
         self.manual_hint_label = QLabel()
         self.manual_hint_label.setWordWrap(True)
         layout.addWidget(self.manual_hint_label)
+
+        self.paint_radius_widget = QWidget()
+        paint_form = QFormLayout(self.paint_radius_widget)
+        paint_form.setContentsMargins(0, 0, 0, 0)
+        self.paint_radius_row = SliderSpinRow(5.0, 150.0, PAINT_SELECT_DEFAULT_RADIUS_PX, decimals=0, step=1)
+        self.paint_radius_row.valueChanged.connect(self._on_paint_radius_changed)
+        paint_form.addRow("Brush radius (px)", self.paint_radius_row)
+        layout.addWidget(self.paint_radius_widget)
+        self.paint_radius_widget.setVisible(False)
 
         clear_button = QPushButton("Clear Manual Trace")
         clear_button.clicked.connect(self._clear_manual_trace)
@@ -344,11 +450,13 @@ class MainWindow(QMainWindow):
         self.vector_item.setPixmap(QPixmap())
         self.wireframe_item.set_shapes([], pixmap.width(), pixmap.height())
         self.manual_model.reset()  # hard reset: old undo history doesn't apply to a new image
-        self._edit_drag_handle = None
+        self._selection = set()
+        self._reset_selection_tool_state()
         self.manual_trace_item.set_bounds(pixmap.width(), pixmap.height())
         self.manual_trace_item.set_preview(None, None)
         self.manual_trace_item.set_active_handle(None)
         self.manual_trace_item.set_hover_handle(None)
+        self.manual_trace_item.set_selection(self._selection_mode, self._selection)
         self.scene.setSceneRect(0, 0, pixmap.width(), pixmap.height())
         self._fit_view()
         self.view.setFocus()
@@ -358,7 +466,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Vectorize Image — {path}")
         self._update_save_enabled()
         self._update_undo_redo_actions()
-        self._run_vectorize()
+        self._update_delete_action()
+        # Automatic tracing doesn't run on its own -- it can be slow on a
+        # large image, and many sessions go straight to Manual Trace/Edit
+        # without ever needing it. It starts as soon as a setting changes
+        # (via the debounce) or the Automatic tool is (re-)selected. Trace
+        # and Edit still need a fresh edge source to snap to, though --
+        # that's a cheap bitmap trace, not the full curve-fitting pipeline.
+        if self._tool == "auto":
+            self.statusBar().showMessage("Image loaded. Adjust a setting to trace it, or switch tools.")
+        else:
+            self._refresh_manual_edge_source()
 
     def _fit_view(self) -> None:
         if not self.scene.sceneRect().isEmpty():
@@ -435,12 +553,15 @@ class MainWindow(QMainWindow):
     def _exit_tool(self, tool: str) -> None:
         if tool in ("trace", "edit"):
             self.view.set_interaction_handler(None)
-            self._edit_drag_handle = None
+            self._reset_selection_tool_state()
+            self._selection = set()
             self.manual_trace_item.set_preview(None, None)
             self.manual_trace_item.set_hover_handle(None)
             self.manual_trace_item.set_active_handle(None)
+            self.manual_trace_item.set_selection(self._selection_mode, self._selection)
 
     def _enter_tool(self, tool: str) -> None:
+        self._set_selection_actions_visible(tool == "edit")
         if tool == "auto":
             self.vector_item.setVisible(True)
             self.wireframe_item.setVisible(self.wireframe_checkbox.isChecked())
@@ -461,8 +582,10 @@ class MainWindow(QMainWindow):
             self.view.set_interaction_handler(
                 _InteractionAdapter(self._edit_on_move, self._edit_on_press, self._edit_on_release, self._edit_on_escape)
             )
+        self._update_paint_radius_visibility()
         self._update_save_enabled()
         self._update_undo_redo_actions()
+        self._update_delete_action()
         self._update_manual_status()
 
     def _enter_manual_tool(self, edit_mode: bool) -> None:
@@ -490,15 +613,63 @@ class MainWindow(QMainWindow):
         for widget in (self.simplify_row, self.corner_row, self.max_error_row, self.min_area_row, self.wireframe_checkbox):
             widget.setEnabled(enabled)
 
+    def _set_selection_actions_visible(self, visible: bool) -> None:
+        self._selection_toolbar_separator.setVisible(visible)
+        for action in self._selection_mode_actions:
+            action.setVisible(visible)
+        self._select_toolbar_separator.setVisible(visible)
+        for action in self._select_tool_actions:
+            action.setVisible(visible)
+
+    def _set_selection_mode(self, mode: str) -> None:
+        if mode == self._selection_mode:
+            return
+        self._selection_mode = mode
+        self._selection = set()
+        self._reset_selection_tool_state()
+        self.manual_trace_item.set_hover_handle(None)
+        self.manual_trace_item.set_active_handle(None)
+        self._update_selection_display()
+
+    def _set_select_tool(self, tool: str) -> None:
+        if tool == self._select_tool:
+            return
+        self._select_tool = tool
+        self._reset_selection_tool_state()
+        self._update_paint_radius_visibility()
+        self._update_manual_status()
+
+    def _update_paint_radius_visibility(self) -> None:
+        self.paint_radius_widget.setVisible(self._tool == "edit" and self._select_tool == "paint")
+
+    def _paint_select_radius(self) -> float:
+        return self.paint_radius_row.value() / (self.view.transform().m11() or 1.0)
+
+    def _on_paint_radius_changed(self, _value: float) -> None:
+        if self._tool == "edit" and self._select_tool == "paint" and self._last_edit_pos is not None:
+            self.manual_trace_item.set_paint_brush(self._last_edit_pos, self._paint_select_radius())
+
+    def _reset_selection_tool_state(self) -> None:
+        self._reset_edit_drag_state()
+        self._box_select_origin = None
+        self._box_select_shift = False
+        self.manual_trace_item.set_box_select(None)
+        self._paint_active = False
+        self._paint_press_selection = None
+        self.manual_trace_item.set_paint_brush(None)
+
     def _clear_manual_trace(self) -> None:
         self.manual_model.clear()
-        self._edit_drag_handle = None
+        self._selection = set()
+        self._reset_edit_drag_state()
         self.manual_trace_item.set_preview(None, None)
         self.manual_trace_item.set_hover_handle(None)
         self.manual_trace_item.set_active_handle(None)
+        self.manual_trace_item.set_selection(self._selection_mode, self._selection)
         self.manual_trace_item.refresh()
         self._update_save_enabled()
         self._update_undo_redo_actions()
+        self._update_delete_action()
         self._update_manual_status()
 
     def _manual_snap_radius(self) -> float:
@@ -519,7 +690,7 @@ class MainWindow(QMainWindow):
         bezier, snap_target = self.manual_model.preview(pos, self._manual_snap_radius())
         self.manual_trace_item.set_preview(bezier, snap_target)
 
-    def _manual_on_press(self, scene_pos) -> None:
+    def _manual_on_press(self, scene_pos, _shift: bool) -> None:
         pos = (scene_pos.x(), scene_pos.y())
         radius = self._manual_snap_radius()
         if self.manual_model.active_node is None:
@@ -544,44 +715,232 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------- edit tool
 
+    def _edit_hit_test(self, pos, radius: float):
+        """The item under `pos`, at whatever granularity the current
+        Select mode works at: a handle tuple (points), a segment index
+        (curves), or a representative node id (contours)."""
+        if self._selection_mode == "points":
+            return self.manual_model.find_handle_near(pos, radius)
+        if self._selection_mode == "curves":
+            return self.manual_model.find_segment_near(pos, radius)
+        if self._selection_mode == "contours":
+            seg_idx = self.manual_model.find_segment_near(pos, radius)
+            if seg_idx is not None:
+                return self.manual_model.segments[seg_idx].start
+            handle = self.manual_model.find_handle_near(pos, radius)
+            if handle is None:
+                return None
+            if handle[0] == "anchor":
+                return handle[1]
+            return self.manual_model.segments[handle[1]].start
+        return None
+
+    def _reset_edit_drag_state(self) -> None:
+        self._edit_drag_origin = None
+        self._edit_drag_checkpointed = False
+
+    def _update_selection_display(self) -> None:
+        self.manual_trace_item.set_selection(self._selection_mode, self._selection)
+        self._update_delete_action()
+        self._update_manual_status()
+
+    def _update_delete_action(self) -> None:
+        self.delete_action.setEnabled(self._tool == "edit" and bool(self._selection))
+
     def _edit_on_move(self, scene_pos) -> None:
         pos = (scene_pos.x(), scene_pos.y())
-        if self._edit_drag_handle is not None:
-            self.manual_model.move_handle(self._edit_drag_handle, pos)
-            self.manual_trace_item.refresh()
-            return
-        hover = self.manual_model.find_handle_near(pos, self._manual_snap_radius())
-        self.manual_trace_item.set_hover_handle(hover)
+        self._last_edit_pos = pos
+        if self._select_tool == "box":
+            self._box_select_on_move(pos)
+        elif self._select_tool == "paint":
+            self._paint_select_on_move(pos)
+        else:
+            self._move_select_on_move(pos)
 
-    def _edit_on_press(self, scene_pos) -> None:
+    def _edit_on_press(self, scene_pos, shift: bool) -> None:
         pos = (scene_pos.x(), scene_pos.y())
-        handle = self.manual_model.find_handle_near(pos, self._manual_snap_radius())
-        self._edit_drag_handle = handle
-        if handle is not None:
-            self.manual_model.checkpoint()
-            self.manual_trace_item.set_active_handle(handle)
+        if self._select_tool == "box":
+            self._box_select_on_press(pos, shift)
+        elif self._select_tool == "paint":
+            self._paint_select_on_press(pos, shift)
+        else:
+            self._move_select_on_press(pos, shift)
 
     def _edit_on_release(self, scene_pos) -> None:
-        if self._edit_drag_handle is not None:
-            self._edit_drag_handle = None
-            self.manual_trace_item.set_active_handle(None)
+        pos = (scene_pos.x(), scene_pos.y())
+        if self._select_tool == "box":
+            self._box_select_on_release(pos)
+        elif self._select_tool == "paint":
+            self._paint_select_on_release()
+        else:
+            self._move_select_on_release()
+
+    def _edit_on_escape(self) -> None:
+        if self._select_tool == "box":
+            self._box_select_on_escape()
+        elif self._select_tool == "paint":
+            self._paint_select_on_escape()
+        else:
+            self._move_select_on_escape()
+
+    # ----------------------------------------------- Move select tool
+
+    def _move_select_on_move(self, pos) -> None:
+        if self._edit_drag_origin is not None:
+            delta = (pos[0] - self._edit_drag_origin[0], pos[1] - self._edit_drag_origin[1])
+            if not self._edit_drag_checkpointed and delta != (0.0, 0.0):
+                self.manual_model.checkpoint()
+                self._edit_drag_checkpointed = True
+            if self._edit_drag_checkpointed:
+                self.manual_model.apply_move(delta)
+                self.manual_trace_item.refresh()
+            return
+        radius = self._manual_snap_radius()
+        hover = self._edit_hit_test(pos, radius)
+        self.manual_trace_item.set_hover_handle(hover)
+
+    def _move_select_on_press(self, pos, shift: bool) -> None:
+        radius = self._manual_snap_radius()
+        hit = self._edit_hit_test(pos, radius)
+        matching = self.manual_model.same_selection_entry(self._selection_mode, self._selection, hit)
+
+        if shift:
+            if hit is not None:
+                if matching is not None:
+                    self._selection.discard(matching)
+                else:
+                    self._selection.add(hit)
+        else:
+            if hit is None:
+                self._selection = set()
+            elif matching is None:
+                self._selection = {hit}
+            # else: hit is already part of the selection -- keep the group
+            # selection as-is, so the whole group can be dragged together
+
+        self._update_selection_display()
+
+        if hit is not None:
+            self.manual_model.begin_move(self._selection_mode, self._selection)
+            self._edit_drag_origin = pos
+            self._edit_drag_checkpointed = False
+            self.manual_trace_item.set_active_handle(hit)
+        else:
+            self._reset_edit_drag_state()
+
+    def _move_select_on_release(self) -> None:
+        was_dragging = self._edit_drag_checkpointed
+        self._reset_edit_drag_state()
+        self.manual_trace_item.set_active_handle(None)
+        if was_dragging:
             self.manual_trace_item.refresh()
             self._update_undo_redo_actions()
             self._update_manual_status()
 
-    def _edit_on_escape(self) -> None:
-        if self._edit_drag_handle is not None:
-            self.manual_model.cancel_checkpoint()
-            self._edit_drag_handle = None
+    def _move_select_on_escape(self) -> None:
+        if self._edit_drag_origin is not None:
+            if self._edit_drag_checkpointed:
+                self.manual_model.cancel_checkpoint()
+                self.manual_trace_item.refresh()
+            self._reset_edit_drag_state()
             self.manual_trace_item.set_active_handle(None)
-            self.manual_trace_item.refresh()
             self._update_undo_redo_actions()
             self._update_manual_status()
+        elif self._selection:
+            self._selection = set()
+            self._update_selection_display()
+
+    # ------------------------------------------------ Box select tool
+
+    def _add_area_hits(self, hits: set) -> None:
+        """Union `hits` into the current selection -- used by both area
+        tools, which only ever add as they sweep over the same item more
+        than once, never toggle it back off."""
+        for hit in hits:
+            matching = self.manual_model.same_selection_entry(self._selection_mode, self._selection, hit)
+            if matching is None:
+                self._selection.add(hit)
+
+    def _box_select_on_move(self, pos) -> None:
+        if self._box_select_origin is None:
+            return
+        self.manual_trace_item.set_box_select((self._box_select_origin, pos))
+
+    def _box_select_on_press(self, pos, shift: bool) -> None:
+        self._box_select_origin = pos
+        self._box_select_shift = shift
+        self.manual_trace_item.set_box_select((pos, pos))
+
+    def _box_select_on_release(self, pos) -> None:
+        if self._box_select_origin is None:
+            return
+        hits = self.manual_model.items_in_box(self._selection_mode, self._box_select_origin, pos)
+        if not self._box_select_shift:
+            self._selection = set()
+        self._add_area_hits(hits)
+        self._box_select_origin = None
+        self.manual_trace_item.set_box_select(None)
+        self._update_selection_display()
+
+    def _box_select_on_escape(self) -> None:
+        if self._box_select_origin is not None:
+            self._box_select_origin = None
+            self.manual_trace_item.set_box_select(None)
+        elif self._selection:
+            self._selection = set()
+            self._update_selection_display()
+
+    # ---------------------------------------------- Paint select tool
+
+    def _paint_select_on_move(self, pos) -> None:
+        radius = self._paint_select_radius()
+        self.manual_trace_item.set_paint_brush(pos, radius)
+        if not self._paint_active:
+            return
+        self._add_area_hits(self.manual_model.items_in_circle(self._selection_mode, pos, radius))
+        self._update_selection_display()
+
+    def _paint_select_on_press(self, pos, shift: bool) -> None:
+        self._paint_press_selection = set(self._selection)
+        if not shift:
+            self._selection = set()
+        self._paint_active = True
+        radius = self._paint_select_radius()
+        self.manual_trace_item.set_paint_brush(pos, radius)
+        self._add_area_hits(self.manual_model.items_in_circle(self._selection_mode, pos, radius))
+        self._update_selection_display()
+
+    def _paint_select_on_release(self) -> None:
+        self._paint_active = False
+        self._paint_press_selection = None
+
+    def _paint_select_on_escape(self) -> None:
+        if self._paint_active:
+            self._selection = self._paint_press_selection if self._paint_press_selection is not None else set()
+            self._paint_active = False
+            self._paint_press_selection = None
+            self._update_selection_display()
+        elif self._selection:
+            self._selection = set()
+            self._update_selection_display()
+
+    def _delete_selection(self) -> None:
+        if self._tool != "edit" or not self._selection:
+            return
+        self._reset_edit_drag_state()
+        self.manual_trace_item.set_active_handle(None)
+        self.manual_trace_item.set_hover_handle(None)
+        if self.manual_model.delete_selection(self._selection_mode, self._selection):
+            self._selection = set()
+            self.manual_trace_item.refresh()
+            self._update_save_enabled()
+            self._update_undo_redo_actions()
+        self._update_selection_display()
 
     # --------------------------------------------------------- undo/redo
 
     def _undo(self) -> None:
-        self._edit_drag_handle = None
+        self._reset_edit_drag_state()
         self.manual_trace_item.set_active_handle(None)
         if self.manual_model.undo():
             self.manual_trace_item.refresh()
@@ -590,7 +949,7 @@ class MainWindow(QMainWindow):
         self._update_manual_status()
 
     def _redo(self) -> None:
-        self._edit_drag_handle = None
+        self._reset_edit_drag_state()
         self.manual_trace_item.set_active_handle(None)
         if self.manual_model.redo():
             self.manual_trace_item.refresh()
@@ -613,7 +972,18 @@ class MainWindow(QMainWindow):
         closed = len(self.manual_model.closed_loops())
         open_chains = len(self.manual_model.open_chains())
         if self._tool == "edit":
-            hint = "drag a point or handle to reshape the curve, Esc cancels a drag"
+            count = len(self._selection)
+            noun = self._selection_mode[:-1] if count == 1 else self._selection_mode
+            if self._select_tool == "box":
+                hint = f"{count} {noun} selected · drag a box to select, Delete to remove" if count else \
+                    "drag a box to select (shift to add)"
+            elif self._select_tool == "paint":
+                hint = f"{count} {noun} selected · hold and drag the brush to select, Delete to remove" if count else \
+                    "hold and drag the brush to select (shift to add)"
+            elif count:
+                hint = f"{count} {noun} selected · drag to move, Delete to remove"
+            else:
+                hint = f"click a {self._selection_mode[:-1]} to select it (shift-click for more), drag to move"
         elif self.manual_model.active_node is None:
             hint = "click to start a chain"
         else:

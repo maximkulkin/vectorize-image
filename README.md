@@ -74,9 +74,13 @@ exactly where the trace deviates from the source, and pick a high-contrast
 **overlay color** (default red) if the original art is dark. The sidebar
 exposes every vectorization setting from the table above (threshold, with an
 Auto/manual toggle; invert; simplify tolerance; corner threshold; max curve
-error; min area) as paired slider + spin-box controls. Changing any of them
-re-runs vectorization automatically, debounced by ~150ms and off the UI
-thread, so dragging a slider stays smooth even while it's recomputing.
+error; min area) as paired slider + spin-box controls. Opening an image
+doesn't trace it right away — tracing can be slow on a large image, and
+plenty of sessions go straight to Manual Trace/Edit without ever needing
+it — so the overlay stays empty until you change one of these settings (or
+switch to/back onto the Automatic tool), which re-runs vectorization
+automatically, debounced by ~150ms and off the UI thread, so dragging a
+slider stays smooth even while it's recomputing.
 
 Check **Show lines and points** to overlay the actual fitted geometry on top
 of the filled trace: each contour's path as a line, on-curve anchor points
@@ -91,18 +95,18 @@ whether you're looking at the whole image or zoomed in on one corner.
 
 ### Tools
 
-Automatic tracing is only one of three **Tool** options — switch to
-**Manual Trace** to draw curves by hand where the automatic settings won't
-nail a shape, or **Edit Points** to directly fix up curves (from either
-tool) that didn't come out quite right, point by point. Manual Trace and
-Edit Points share the same underlying set of points and curves, so you can
-switch between drawing and adjusting freely without losing work; the first
-time you switch to either one, it starts from whatever the automatic
-pipeline last produced, so "trace automatically, then touch up by hand" is
-a single fluid workflow rather than starting from a blank canvas. Threshold
-and invert still apply in both (they control what edges there are to snap
-to); the curve-fit-specific settings don't, since there's no automatic
-fitting happening in either to tune.
+Automatic tracing is only one of three **Tool** buttons on the toolbar's
+second row (wand / pen / cursor icons) — switch to **Manual Trace** to draw
+curves by hand where the automatic settings won't nail a shape, or **Edit**
+to select and fix up curves (from either tool) that didn't come out quite
+right. Manual Trace and Edit share the same underlying set of points and
+curves, so you can switch between drawing and adjusting freely without
+losing work; the first time you switch to either one, it starts from
+whatever the automatic pipeline last produced, so "trace automatically,
+then touch up by hand" is a single fluid workflow rather than starting from
+a blank canvas. Threshold and invert still apply in both (they control what
+edges there are to snap to); the curve-fit-specific settings don't, since
+there's no automatic fitting happening in either to tune.
 
 #### Manual Trace
 
@@ -123,18 +127,58 @@ A click-to-place "magnetic pen":
    that never got a first segment attached is discarded rather than left as
    a stray dot.
 
-#### Edit Points
+#### Edit
 
 Every anchor point and control-point handle of the current curves (blue
 internal / orange open anchors, purple control points, with a dashed line
-back to the anchor they belong to) becomes directly draggable:
+back to the anchor they belong to) becomes directly draggable, and three
+more toolbar buttons appear (dot / curve / loop icons) for three work modes
+that control what a click picks — each also has a number-key shortcut:
 
-- **Drag an anchor** and the curve reshapes live; the control point on each
-  side of it moves with it (preserving that segment's tangent at the anchor)
-  while the far end of each segment stays put — the same way dragging a node
-  works in ordinary vector editors.
-- **Drag a control point** and only its own segment's shape changes.
-- **Esc** cancels a drag in progress, snapping back to where it started.
+- **Points** (`1`) — clicking selects one anchor or control-point handle.
+- **Curves** (`2`) — clicking anywhere along a segment's curve selects that
+  whole segment (both its endpoints).
+- **Contours** (`3`) — clicking anywhere along any segment of a contour
+  selects the entire connected contour (every node and segment in it, open
+  or closed), no matter which point along it you clicked.
+
+A second row of three toolbar buttons (arrow / dashed-box / dashed-circle
+icons) picks *how* a click or drag builds that selection:
+
+- **Move** (the default) — **click** an item to select just it;
+  **Shift-click** another to add it to the selection, or Shift-click a
+  selected item again to remove it, so you can build up a multi-item
+  selection across several clicks. Clicking empty space clears the
+  selection. With one or more items selected, **drag any one of them** to
+  move the whole selection together, rigidly, by the same offset — this is
+  how you reposition a multi-point selection or slide an entire contour
+  without distorting it. As with a single-handle drag, the whole thing
+  (from press to release) is one step on the undo stack.
+- **Box Select** — **drag a rectangle**; on release, everything it touches
+  at the current granularity is selected. A curve or contour only needs to
+  pass through the box, not lie entirely inside it. Plain drag replaces the
+  selection; Shift-drag adds to it.
+- **Paint Select** — a circle of adjustable radius (**Brush radius**
+  slider, in the sidebar) follows the cursor; **press and drag** to select
+  everything the circle touches as you sweep it around, the same
+  any-overlap rule as Box Select. It only ever adds as you go, so painting
+  back over something already picked up doesn't deselect it. Without
+  Shift, starting a new stroke clears the previous selection first;
+  with Shift, it's added to instead.
+
+**Esc** clears the current selection when nothing's in progress, or cancels
+whatever's in progress otherwise: a Move drag snaps back to where it
+started, a Box Select drag is simply abandoned, and a Paint Select stroke
+reverts to the selection it had before the stroke began.
+
+**Edit → Delete Selection** (`Delete`/`Backspace`, also on the toolbar)
+removes whatever's selected and is itself undoable:
+
+- **Points** mode deletes the selected anchors, along with every segment
+  attached to them.
+- **Curves** mode deletes the selected segments but keeps their endpoints
+  (and any other segments still attached to them) in place.
+- **Contours** mode deletes the selected contours entirely.
 
 Both tools: a fully closed loop (drawn filled, in the same overlay
 color/opacity as above) is a real shape — closing one inside another makes
@@ -146,9 +190,10 @@ work, but aren't part of the export.
 #### Undo/redo
 
 Every committed change in either tool — placing or connecting a point,
-clearing the trace, a whole point-or-handle drag (not each intermediate
-mouse-move frame of it) — is one step on an undo stack, via **Edit → Undo**
-/ **Redo** (`Ctrl+Z` / `Ctrl+Shift+Z`, also on the toolbar).
+clearing the trace, a whole selection drag (not each intermediate
+mouse-move frame of it), a Delete Selection — is one step on an undo stack,
+via **Edit → Undo** / **Redo** (`Ctrl+Z` / `Ctrl+Shift+Z`, also on the
+toolbar).
 
 ### Canvas navigation
 
