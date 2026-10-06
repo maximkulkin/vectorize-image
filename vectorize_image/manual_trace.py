@@ -39,20 +39,25 @@ one undo step -- see `checkpoint`/`undo`/`redo`.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Collection, Iterable, Set
+from typing import ClassVar, TypedDict, assert_never, final
+
 import numpy as np
 
 from . import curve_fit, simplify
+from .typedefs import Bezier, Contour, ControlHandle, Handle, PointLike, SelectionItem, SelectionMode, Shape
 
-Bezier = list[np.ndarray]
+type _Predicate = Callable[[np.ndarray], bool]
 
 
+@final
 class Segment:
     __slots__ = ("start", "end", "bezier")
 
-    def __init__(self, start: int, end: int, bezier: Bezier):
-        self.start = start
-        self.end = end
-        self.bezier = bezier
+    def __init__(self, start: int, end: int, bezier: Bezier) -> None:
+        self.start: int = start
+        self.end: int = end
+        self.bezier: Bezier = bezier
 
     def other(self, node: int) -> int:
         return self.end if node == self.start else self.start
@@ -67,6 +72,14 @@ class Segment:
 
 def _nearest_index(points: np.ndarray, pos: np.ndarray) -> int:
     return int(np.argmin(np.sum((points - pos) ** 2, axis=1)))
+
+
+class _Snapshot(TypedDict):
+    nodes: dict[int, np.ndarray]
+    node_contour: dict[int, int | None]
+    segments: list[Segment]
+    active_node: int | None
+    next_id: int
 
 
 def _walk_contour(points: np.ndarray, start_idx: int, end_idx: int) -> list[np.ndarray]:
@@ -89,17 +102,17 @@ def _walk_contour(points: np.ndarray, start_idx: int, end_idx: int) -> list[np.n
 
 
 class ManualTraceModel:
-    def __init__(self):
+    def __init__(self) -> None:
         self.nodes: dict[int, np.ndarray] = {}
         self.node_contour: dict[int, int | None] = {}
         self.segments: list[Segment] = []
         self.active_node: int | None = None
-        self._next_id = 0
+        self._next_id: int = 0
         self._contours: list[np.ndarray] = []
-        self._undo_stack: list[dict] = []
-        self._redo_stack: list[dict] = []
+        self._undo_stack: list[_Snapshot] = []
+        self._redo_stack: list[_Snapshot] = []
         self._move_node_originals: dict[int, np.ndarray] = {}
-        self._move_control_originals: dict[tuple, np.ndarray] = {}
+        self._move_control_originals: dict[ControlHandle, np.ndarray] = {}
 
     # ------------------------------------------------------------ setup
 
@@ -113,6 +126,10 @@ class ManualTraceModel:
         """Hard wipe for a new image/document: also drops undo history,
         since it wouldn't apply to different underlying image data anyway.
         """
+        self._reset()
+        self.changed.emit()
+
+    def _reset(self) -> None:
         self.nodes.clear()
         self.node_contour.clear()
         self.segments.clear()
@@ -132,7 +149,7 @@ class ManualTraceModel:
         self.segments.clear()
         self.active_node = None
 
-    def load_shapes(self, shapes: list[list[list[Bezier]]]) -> None:
+    def load_shapes(self, shapes: list[Shape]) -> None:
         """Seed the graph from an already-fitted shape list (e.g. the
         automatic pipeline's output), one node per bezier's start point and
         one segment per bezier, wired into closed loops. Not itself
@@ -140,15 +157,15 @@ class ManualTraceModel:
         an edit to one -- but afterward every point is fully editable/
         undoable as normal.
         """
-        self.reset()
+        self._reset()
         for shape in shapes:
             for contour in shape:
                 self._load_contour(contour)
 
-    def _load_contour(self, contour: list[Bezier]) -> None:
+    def _load_contour(self, contour: Contour) -> None:
         if not contour:
             return
-        node_ids = []
+        node_ids: list[int] = []
         for bezier in contour:
             node_id = self._next_id = self._next_id + 1
             self.nodes[node_id] = np.array(bezier[0], dtype=float)
@@ -163,7 +180,7 @@ class ManualTraceModel:
 
     # ------------------------------------------------------------- undo
 
-    def _snapshot(self) -> dict:
+    def _snapshot(self) -> _Snapshot:
         return {
             "nodes": {k: v.copy() for k, v in self.nodes.items()},
             "node_contour": dict(self.node_contour),
@@ -172,7 +189,7 @@ class ManualTraceModel:
             "next_id": self._next_id,
         }
 
-    def _restore(self, snapshot: dict) -> None:
+    def _restore(self, snapshot: _Snapshot) -> None:
         self.nodes = {k: v.copy() for k, v in snapshot["nodes"].items()}
         self.node_contour = dict(snapshot["node_contour"])
         self.segments = [Segment(s.start, s.end, [p.copy() for p in s.bezier]) for s in snapshot["segments"]]
@@ -227,9 +244,7 @@ class ManualTraceModel:
     def degree(self, node: int) -> int:
         return sum(1 for s in self.segments if s.start == node or s.end == node)
 
-    def find_dangling_near(
-        self, pos: np.ndarray, max_dist: float, exclude: set[int] | frozenset[int] = frozenset()
-    ) -> int | None:
+    def find_dangling_near(self, pos: PointLike, max_dist: float, exclude: Collection[int] = ()) -> int | None:
         pos = np.asarray(pos, dtype=float)
         best_node, best_dist = None, max_dist
         for node, point in self.nodes.items():
@@ -241,7 +256,7 @@ class ManualTraceModel:
                 best_node = node
         return best_node
 
-    def _nearest_edge_point(self, pos: np.ndarray) -> tuple[int | None, np.ndarray]:
+    def _nearest_edge_point(self, pos: PointLike) -> tuple[int | None, np.ndarray]:
         """Closest point across every contour in the edge source. Returns
         (None, pos) unchanged if there's no edge source to snap to."""
         pos = np.asarray(pos, dtype=float)
@@ -252,7 +267,8 @@ class ManualTraceModel:
             if len(contour) == 0:
                 continue
             idx = _nearest_index(contour, pos)
-            dist = float(np.sum((contour[idx] - pos) ** 2))
+            offset: np.ndarray = contour[idx] - pos
+            dist = float(np.sum(offset**2))
             if dist < best_dist:
                 best_dist = dist
                 best_contour = ci
@@ -274,7 +290,7 @@ class ManualTraceModel:
 
     # ------------------------------------------------------------ preview
 
-    def preview(self, cursor_pos: np.ndarray, snap_radius: float) -> tuple[Bezier | None, int | None]:
+    def preview(self, cursor_pos: PointLike, snap_radius: float) -> tuple[Bezier | None, int | None]:
         """The live single-bezier preview from the active node toward the
         cursor. Returns (bezier, snap_target_node) -- snap_target_node is
         set when the cursor is close enough to an existing dangling node
@@ -299,7 +315,7 @@ class ManualTraceModel:
 
     # ------------------------------------------------------------ editing
 
-    def begin_or_resume(self, pos: np.ndarray, snap_radius: float) -> int:
+    def begin_or_resume(self, pos: PointLike, snap_radius: float) -> int:
         """Handle a click while no chain is in progress: resume an existing
         dangling point near `pos`, or start a new one snapped to the
         nearest edge (or at `pos` itself if there's no edge source).
@@ -316,9 +332,10 @@ class ManualTraceModel:
         self.nodes[node] = point
         self.node_contour[node] = contour
         self.active_node = node
+        self.changed.emit()
         return node
 
-    def commit(self, cursor_pos: np.ndarray, snap_radius: float) -> bool:
+    def commit(self, cursor_pos: PointLike, snap_radius: float) -> bool:
         """Handle a click while a chain is in progress: add the previewed
         segment, ending at an existing dangling point (connecting/closing)
         if the cursor is close enough to one, otherwise at a new point.
@@ -364,22 +381,26 @@ class ManualTraceModel:
         """Escape: stop the current chain. A point that never got a
         segment attached is discarded rather than left as a stray dot.
         """
-        if self.active_node is not None and self.degree(self.active_node) == 0:
+        if self.active_node is None:
+            return
+        if self.degree(self.active_node) == 0:
             self._push_undo()
             del self.nodes[self.active_node]
             del self.node_contour[self.active_node]
         self.active_node = None
+        self.changed.emit()
 
     # ------------------------------------------------------- edit handles
 
-    def find_handle_near(self, pos: np.ndarray, max_dist: float) -> tuple | None:
+    def find_handle_near(self, pos: PointLike, max_dist: float) -> Handle | None:
         """The closest draggable handle to `pos` -- an anchor point or a
         control point of any segment -- within max_dist, or None. A handle
         is ("anchor", node_id) or ("control", segment_index, which), where
         which is 1 or 2 (a bezier's index for P1/P2).
         """
         pos = np.asarray(pos, dtype=float)
-        best_handle, best_dist = None, max_dist
+        best_handle: Handle | None = None
+        best_dist = max_dist
         for node_id, node_pos in self.nodes.items():
             dist = float(np.linalg.norm(node_pos - pos))
             if dist <= best_dist:
@@ -393,14 +414,15 @@ class ManualTraceModel:
                     best_handle = ("control", seg_idx, which)
         return best_handle
 
-    def find_segment_near(self, pos: np.ndarray, max_dist: float, samples: int = 21) -> int | None:
+    def find_segment_near(self, pos: PointLike, max_dist: float, samples: int = 21) -> int | None:
         """The segment whose curve passes closest to `pos`, within
         max_dist, approximated by sampling each bezier -- for Curves and
         Contours work mode hit-testing, where the click target is the
         curve itself rather than one of its points.
         """
         pos = np.asarray(pos, dtype=float)
-        best_idx, best_dist = None, max_dist
+        best_idx: int | None = None
+        best_dist = max_dist
         ts = np.linspace(0.0, 1.0, samples)
         for i, seg in enumerate(self.segments):
             for t in ts:
@@ -435,13 +457,13 @@ class ManualTraceModel:
                         frontier.append(other)
         return nodes, segments
 
-    def get_handle_position(self, handle: tuple) -> np.ndarray:
+    def get_handle_position(self, handle: Handle) -> np.ndarray:
         if handle[0] == "anchor":
             return self.nodes[handle[1]]
         _, seg_idx, which = handle
         return self.segments[seg_idx].bezier[which]
 
-    def move_handle(self, handle: tuple, new_pos: np.ndarray) -> None:
+    def move_handle(self, handle: Handle, new_pos: PointLike) -> None:
         """Reposition a handle found via find_handle_near. Doesn't
         checkpoint itself -- call `checkpoint()` once before a drag's first
         move_handle call, not on every one, so the whole drag is one undo
@@ -473,7 +495,9 @@ class ManualTraceModel:
 
     # ---------------------------------------------------------- selection
 
-    def resolve_selection(self, mode: str, items) -> tuple[set[int], set[tuple], set[int]]:
+    def resolve_selection(
+        self, mode: SelectionMode, items: Iterable[SelectionItem]
+    ) -> tuple[set[int], set[ControlHandle], set[int]]:
         """Expand a work-mode-specific selection into the concrete graph
         pieces it covers: (anchor node ids, standalone control-point
         handles, segment indices). Used by move, delete, and by the GUI
@@ -491,7 +515,7 @@ class ManualTraceModel:
         """
         if mode == "points":
             anchors = {item[1] for item in items if item[0] == "anchor"}
-            standalone = set()
+            standalone: set[ControlHandle] = set()
             for item in items:
                 if item[0] != "control":
                     continue
@@ -506,7 +530,7 @@ class ManualTraceModel:
 
         if mode == "curves":
             seg_indices = {i for i in items if 0 <= i < len(self.segments)}
-            nodes = set()
+            nodes: set[int] = set()
             for i in seg_indices:
                 seg = self.segments[i]
                 nodes.add(seg.start)
@@ -514,17 +538,19 @@ class ManualTraceModel:
             return nodes, set(), seg_indices
 
         if mode == "contours":
-            nodes: set[int] = set()
+            nodes = set()
             segs: set[int] = set()
-            for rep in items:
+            for rep in _indices(items):
                 n, s = self.connected_component(rep)
                 nodes |= n
                 segs |= s
             return nodes, set(), segs
 
-        return set(), set(), set()
+        assert_never(mode)
 
-    def same_selection_entry(self, mode: str, existing: set, hit) -> object | None:
+    def same_selection_entry(
+        self, mode: SelectionMode, existing: Set[SelectionItem], hit: SelectionItem | None
+    ) -> SelectionItem | None:
         """Which member of `existing` (if any) represents the same thing as
         `hit`. For points/curves, items are already the atomic unit, so
         this is just membership -- but two different clicks on the same
@@ -543,7 +569,7 @@ class ManualTraceModel:
                 return rep
         return None
 
-    def begin_move(self, mode: str, items) -> None:
+    def begin_move(self, mode: SelectionMode, items: Iterable[SelectionItem]) -> None:
         """Snapshot original positions of a resolved selection, before a
         live drag. Call once when the drag starts, then `apply_move` on
         each subsequent frame with the total delta since then -- applying
@@ -554,7 +580,7 @@ class ManualTraceModel:
         self._move_node_originals = {n: self.nodes[n].copy() for n in nodes}
         self._move_control_originals = {c: self.segments[c[1]].bezier[c[2]].copy() for c in controls}
 
-    def apply_move(self, delta: np.ndarray) -> None:
+    def apply_move(self, delta: PointLike) -> None:
         """Move everything captured by the last `begin_move` by `delta`
         (relative to the snapshot, not the current position). A no-op if
         nothing was captured (empty selection). Doesn't checkpoint itself --
@@ -569,7 +595,7 @@ class ManualTraceModel:
             if seg_idx < len(self.segments):
                 self.segments[seg_idx].bezier[which] = original + delta
 
-    def delete_selection(self, mode: str, items) -> bool:
+    def delete_selection(self, mode: SelectionMode, items: Iterable[SelectionItem]) -> bool:
         """Remove a resolved selection as one undo step. Points mode only
         deletes anchors -- a lone control point isn't an independent,
         deletable thing, just a handle for reshaping its curve via move --
@@ -627,7 +653,9 @@ class ManualTraceModel:
         if self.active_node == node_id:
             self.active_node = None
 
-    def items_in_box(self, mode: str, corner1, corner2) -> set:
+    def items_in_box(
+        self, mode: SelectionMode, corner1: tuple[float, float], corner2: tuple[float, float]
+    ) -> set[SelectionItem]:
         """Every item of `mode`'s granularity that overlaps the axis-aligned
         box spanned by the two corners at all -- a segment or contour need
         only pass through the box, not lie entirely inside it, matching how
@@ -636,25 +664,25 @@ class ManualTraceModel:
         xmin, xmax = sorted((x0, x1))
         ymin, ymax = sorted((y0, y1))
 
-        def predicate(pos) -> bool:
-            return xmin <= pos[0] <= xmax and ymin <= pos[1] <= ymax
+        def predicate(pos: np.ndarray) -> bool:
+            return bool(xmin <= pos[0] <= xmax and ymin <= pos[1] <= ymax)
 
         return self._items_matching(mode, predicate)
 
-    def items_in_circle(self, mode: str, center, radius: float) -> set:
+    def items_in_circle(self, mode: SelectionMode, center: PointLike, radius: float) -> set[SelectionItem]:
         """Every item of `mode`'s granularity that overlaps a circle -- the
         "paint select" brush -- centered at `center` with the given radius.
         Same any-overlap semantics as items_in_box."""
         center = np.asarray(center, dtype=float)
 
-        def predicate(pos) -> bool:
-            return float(np.linalg.norm(np.asarray(pos, dtype=float) - center)) <= radius
+        def predicate(pos: np.ndarray) -> bool:
+            return float(np.linalg.norm(pos - center)) <= radius
 
         return self._items_matching(mode, predicate)
 
-    def _items_matching(self, mode: str, predicate) -> set:
+    def _items_matching(self, mode: SelectionMode, predicate: _Predicate) -> set[SelectionItem]:
         if mode == "points":
-            hits = set()
+            hits: set[SelectionItem] = set()
             for node_id, pos in self.nodes.items():
                 if predicate(pos):
                     hits.add(("anchor", node_id))
@@ -673,7 +701,7 @@ class ManualTraceModel:
                 if self._segment_matches(seg, predicate):
                     hit_nodes.add(seg.start)
                     hit_nodes.add(seg.end)
-            reps: set[int] = set()
+            reps: set[SelectionItem] = set()
             covered: set[int] = set()
             for node_id in hit_nodes:
                 if node_id in covered:
@@ -686,7 +714,7 @@ class ManualTraceModel:
         return set()
 
     @staticmethod
-    def _segment_matches(seg: Segment, predicate) -> bool:
+    def _segment_matches(seg: Segment, predicate: _Predicate) -> bool:
         if predicate(seg.bezier[0]) or predicate(seg.bezier[3]):
             return True
         return any(predicate(curve_fit._q(seg.bezier, t)) for t in np.linspace(0.05, 0.95, 19))
@@ -724,13 +752,13 @@ class ManualTraceModel:
         visited.update(touched)
         return beziers
 
-    def closed_loops(self) -> list[list[Bezier]]:
+    def closed_loops(self) -> list[Contour]:
         """Every fully-closed chain, each as an ordered, contour-shaped
         list of beziers (bezier[i][3] == bezier[i+1][0], and the last
         wraps back to the first)."""
         adjacency = self._adjacency()
         visited: set[int] = set()
-        loops = []
+        loops: list[Contour] = []
         for node in list(self.nodes):
             if self.degree(node) != 2:
                 continue
@@ -746,7 +774,7 @@ class ManualTraceModel:
         to the other (for preview rendering; not part of the export)."""
         adjacency = self._adjacency()
         visited: set[int] = set()
-        chains = []
+        chains: list[list[Bezier]] = []
         for node in list(self.nodes):
             if self.degree(node) != 1:
                 continue
@@ -758,7 +786,7 @@ class ManualTraceModel:
         return chains
 
 
-def closed_loop_shapes(loops: list[list[Bezier]]) -> list[list[list[Bezier]]]:
+def closed_loop_shapes(loops: list[Contour]) -> list[Shape]:
     """Group closed loops into shapes by containment (a loop drawn inside
     another becomes its hole), the same way the automatic pipeline does --
     see simplify.compute_shape_roots -- so manually-traced holes punch out
@@ -768,7 +796,7 @@ def closed_loop_shapes(loops: list[list[Bezier]]) -> list[list[list[Bezier]]]:
         return []
     polygons = [np.array([bez[0] for bez in loop]) for loop in loops]
     roots = simplify.compute_shape_roots(polygons)
-    shapes_by_root: dict[int, list[list[Bezier]]] = {}
+    shapes_by_root: dict[int, Shape] = {}
     for loop, root in zip(loops, roots):
         shapes_by_root.setdefault(root, []).append(loop)
     return list(shapes_by_root.values())

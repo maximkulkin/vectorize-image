@@ -4,7 +4,7 @@ import pytest
 from vectorize_image import simplify, tracing
 
 
-def test_filled_square_traces_single_loop_with_correct_area():
+def test_filled_square_traces_single_loop_with_correct_area() -> None:
     bitmap = np.ones((3, 3), dtype=bool)
     loops = tracing.trace_bitmap(bitmap)
 
@@ -15,7 +15,7 @@ def test_filled_square_traces_single_loop_with_correct_area():
     assert abs(simplify.polygon_area(poly)) == pytest.approx(9.0)
 
 
-def test_donut_traces_outer_and_inner_loop():
+def test_donut_traces_outer_and_inner_loop() -> None:
     bitmap = np.ones((10, 10), dtype=bool)
     bitmap[3:7, 3:7] = False  # 4x4 hole
 
@@ -26,7 +26,7 @@ def test_donut_traces_outer_and_inner_loop():
     assert areas == pytest.approx([16.0, 100.0])
 
 
-def test_diagonally_touching_pixels_trace_as_two_loops():
+def test_diagonally_touching_pixels_trace_as_two_loops() -> None:
     """Regression test for saddle-point resolution: two foreground pixels
     that touch only at a corner must NOT be merged into one loop (foreground
     is treated as 4-connected), and must not crash the tracer either.
@@ -40,7 +40,7 @@ def test_diagonally_touching_pixels_trace_as_two_loops():
         assert abs(simplify.polygon_area(loop)) == pytest.approx(1.0)
 
 
-def test_mirrored_saddle_also_traces_as_two_loops():
+def test_mirrored_saddle_also_traces_as_two_loops() -> None:
     bitmap = np.array([[False, True], [True, False]])
     loops = tracing.trace_bitmap(bitmap)
     assert len(loops) == 2
@@ -48,12 +48,12 @@ def test_mirrored_saddle_also_traces_as_two_loops():
         assert abs(simplify.polygon_area(loop)) == pytest.approx(1.0)
 
 
-def test_empty_bitmap_has_no_loops():
+def test_empty_bitmap_has_no_loops() -> None:
     bitmap = np.zeros((20, 20), dtype=bool)
     assert tracing.trace_bitmap(bitmap) == []
 
 
-def test_full_bitmap_traces_image_boundary():
+def test_full_bitmap_traces_image_boundary() -> None:
     bitmap = np.ones((5, 8), dtype=bool)
     loops = tracing.trace_bitmap(bitmap)
     assert len(loops) == 1

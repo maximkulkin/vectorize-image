@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import ClassVar, TypedDict, override
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal
@@ -10,14 +11,24 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from .. import binarize, pipeline, svgwrite
 
 
+class VectorizeParams(TypedDict):
+    threshold: float | None  # None: pick automatically (Otsu)
+    invert: bool
+    simplify_tolerance: float
+    corner_threshold: float
+    max_error: float
+    min_area: float
+    fill: str
+
+
 class WorkerSignals(QObject):
     """Lives on the main thread and outlives any individual VectorizeTask,
     so connections stay valid regardless of when a background task finishes.
     """
 
-    # generation, svg, shapes (list[list[list[Bezier]]], see pipeline.vectorize_bitmap), threshold_used, elapsed_ms
-    finished = Signal(int, str, object, float, float)
-    failed = Signal(int, str)  # generation, error message
+    # generation, svg, shapes (list[Shape], see pipeline.vectorize_bitmap), threshold_used, elapsed_ms
+    finished: ClassVar[Signal] = Signal(int, str, object, float, float)
+    failed: ClassVar[Signal] = Signal(int, str)  # generation, error message
 
 
 class VectorizeTask(QRunnable):
@@ -28,13 +39,14 @@ class VectorizeTask(QRunnable):
     than trying to cancel in-flight work).
     """
 
-    def __init__(self, generation: int, gray: np.ndarray, params: dict, signals: WorkerSignals):
+    def __init__(self, generation: int, gray: np.ndarray, params: VectorizeParams, signals: WorkerSignals) -> None:
         super().__init__()
-        self.generation = generation
-        self.gray = gray
-        self.params = params
-        self.signals = signals
+        self.generation: int = generation
+        self.gray: np.ndarray = gray
+        self.params: VectorizeParams = params
+        self.signals: WorkerSignals = signals
 
+    @override
     def run(self) -> None:
         start = time.perf_counter()
         try:

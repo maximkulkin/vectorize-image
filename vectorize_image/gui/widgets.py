@@ -2,8 +2,24 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QDoubleSpinBox, QGraphicsView, QHBoxLayout, QSlider, QWidget
+from typing import ClassVar, Final, Protocol, override
+
+from PySide6.QtCore import QPoint, QPointF, Qt, Signal
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QWheelEvent
+from PySide6.QtWidgets import QDoubleSpinBox, QGraphicsScene, QGraphicsView, QHBoxLayout, QSlider, QWidget
+
+
+class InteractionHandler(Protocol):
+    """Takes over the view's left mouse button (and Escape) -- see
+    ZoomableGraphicsView.set_interaction_handler."""
+
+    def on_move(self, scene_pos: QPointF) -> None: ...
+
+    def on_press(self, scene_pos: QPointF, shift: bool) -> None: ...
+
+    def on_release(self, scene_pos: QPointF) -> None: ...
+
+    def on_escape(self) -> None: ...
 
 
 class SliderSpinRow(QWidget):
@@ -14,7 +30,7 @@ class SliderSpinRow(QWidget):
     `valueChanged`) always deals in the real, unscaled float value.
     """
 
-    valueChanged = Signal(float)
+    valueChanged: ClassVar[Signal] = Signal(float)
 
     def __init__(
         self,
@@ -24,14 +40,14 @@ class SliderSpinRow(QWidget):
         decimals: int = 2,
         step: float | None = None,
         parent: QWidget | None = None,
-    ):
+    ) -> None:
         super().__init__(parent)
-        self._scale = 10**decimals
+        self._scale: int = 10**decimals
 
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider: QSlider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(round(minimum * self._scale), round(maximum * self._scale))
 
-        self.spin = QDoubleSpinBox()
+        self.spin: QDoubleSpinBox = QDoubleSpinBox()
         self.spin.setDecimals(decimals)
         self.spin.setRange(minimum, maximum)
         self.spin.setSingleStep(step if step is not None else 1.0 / self._scale)
@@ -73,6 +89,7 @@ class SliderSpinRow(QWidget):
     def setValue(self, value: float) -> None:
         self._set_value_silent(value)
 
+    @override
     def setEnabled(self, enabled: bool) -> None:  # noqa: N802 - Qt override
         super().setEnabled(enabled)
         self.slider.setEnabled(enabled)
@@ -86,24 +103,22 @@ class ZoomableGraphicsView(QGraphicsView):
     so that point stays put on screen).
     """
 
-    ZOOM_IN_FACTOR = 1.25
-    ZOOM_OUT_FACTOR = 1.0 / 1.25
-    MIN_SCALE = 0.05
-    MAX_SCALE = 40.0
-    PAN_STEP = 60
+    ZOOM_IN_FACTOR: Final = 1.25
+    ZOOM_OUT_FACTOR: Final = 1.0 / 1.25
+    MIN_SCALE: Final = 0.05
+    MAX_SCALE: Final = 40.0
+    PAN_STEP: Final = 60
 
-    def __init__(self, *args, **kwargs):
-        from PySide6.QtGui import QPainter
-
-        super().__init__(*args, **kwargs)
-        self._interaction_handler = None
+    def __init__(self, scene: QGraphicsScene, parent: QWidget | None = None) -> None:
+        super().__init__(scene, parent)
+        self._interaction_handler: InteractionHandler | None = None
         # Without this, Qt only sends mouseMoveEvent while a button is held
         # down (i.e. during a drag) -- but manual tracing's live preview
         # needs to see plain cursor movement between clicks, with no button
         # pressed at all.
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         # Zooming re-centers manually (see _zoom_at_viewport_pos / zoom_in /
         # zoom_out) rather than via QGraphicsView's built-in AnchorUnderMouse,
         # which re-derives the cursor's viewport position from a live global
@@ -111,10 +126,10 @@ class ZoomableGraphicsView(QGraphicsView):
         # that isn't needed when we already have the exact position we want
         # to anchor on (the wheel event's own position, or the viewport
         # center), and one that misbehaves in at least some environments.
-        self.setTransformationAnchor(QGraphicsView.NoAnchor)
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setFocusPolicy(Qt.StrongFocus)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def _apply_zoom(self, factor: float) -> float:
         """Scale by `factor`, clamped to [MIN_SCALE, MAX_SCALE]. Returns the
@@ -131,7 +146,7 @@ class ZoomableGraphicsView(QGraphicsView):
             return factor
         return 0.0
 
-    def _zoom_at_viewport_pos(self, viewport_pos, factor: float) -> None:
+    def _zoom_at_viewport_pos(self, viewport_pos: QPoint, factor: float) -> None:
         old_scene_pos = self.mapToScene(viewport_pos)
         if self._apply_zoom(factor):
             # Scaling alone leaves `viewport_pos` pointing at a different
@@ -151,22 +166,24 @@ class ZoomableGraphicsView(QGraphicsView):
         """Zoom out centered on the view (for keyboard/menu use)."""
         self._zoom_at_viewport_pos(self.viewport().rect().center(), self.ZOOM_OUT_FACTOR)
 
-    def wheelEvent(self, event) -> None:
+    @override
+    def wheelEvent(self, event: QWheelEvent) -> None:
         # Anchor on the cursor so the point under it stays under it.
         factor = self.ZOOM_IN_FACTOR if event.angleDelta().y() > 0 else self.ZOOM_OUT_FACTOR
         self._zoom_at_viewport_pos(event.position().toPoint(), factor)
 
-    def keyPressEvent(self, event) -> None:
+    @override
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
-        if key == Qt.Key_Escape and self._interaction_handler is not None:
+        if key == Qt.Key.Key_Escape and self._interaction_handler is not None:
             self._interaction_handler.on_escape()
-        elif key == Qt.Key_Left:
+        elif key == Qt.Key.Key_Left:
             self._pan(-self.PAN_STEP, 0)
-        elif key == Qt.Key_Right:
+        elif key == Qt.Key.Key_Right:
             self._pan(self.PAN_STEP, 0)
-        elif key == Qt.Key_Up:
+        elif key == Qt.Key.Key_Up:
             self._pan(0, -self.PAN_STEP)
-        elif key == Qt.Key_Down:
+        elif key == Qt.Key.Key_Down:
             self._pan(0, self.PAN_STEP)
         else:
             super().keyPressEvent(event)
@@ -175,7 +192,7 @@ class ZoomableGraphicsView(QGraphicsView):
         self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dx)
         self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dy)
 
-    def set_interaction_handler(self, handler) -> None:
+    def set_interaction_handler(self, handler: InteractionHandler | None) -> None:
         """Install (or, passing None, remove) a press/move/release/escape
         handler that takes over the left mouse button for something other
         than panning -- used for manual tracing and edit-point dragging.
@@ -184,22 +201,25 @@ class ZoomableGraphicsView(QGraphicsView):
         the Shift key was held at press-time (for toggling a selection).
         """
         self._interaction_handler = handler
-        self.setDragMode(QGraphicsView.NoDrag if handler else QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag if handler else QGraphicsView.DragMode.ScrollHandDrag)
 
-    def mouseMoveEvent(self, event) -> None:
+    @override
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._interaction_handler is not None:
             self._interaction_handler.on_move(self.mapToScene(event.position().toPoint()))
         super().mouseMoveEvent(event)
 
-    def mousePressEvent(self, event) -> None:
-        if self._interaction_handler is not None and event.button() == Qt.LeftButton:
-            shift = bool(event.modifiers() & Qt.ShiftModifier)
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._interaction_handler is not None and event.button() == Qt.MouseButton.LeftButton:
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             self._interaction_handler.on_press(self.mapToScene(event.position().toPoint()), shift)
             return
         super().mousePressEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:
-        if self._interaction_handler is not None and event.button() == Qt.LeftButton:
+    @override
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._interaction_handler is not None and event.button() == Qt.MouseButton.LeftButton:
             self._interaction_handler.on_release(self.mapToScene(event.position().toPoint()))
             return
         super().mouseReleaseEvent(event)

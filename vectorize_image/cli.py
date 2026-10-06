@@ -21,62 +21,78 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-o",
         "--output",
-        help="path to write the output SVG to (default: input filename with .svg "
-        "extension; use '-' for stdout)",
+        help=(
+            "path to write the output SVG to (default: input filename with .svg "
+            "extension; use '-' for stdout)"
+        ),
     )
     parser.add_argument(
         "--threshold",
         type=float,
         default=None,
-        help="grayscale threshold in [0, 255] separating background from ink; "
-        "pixels darker than this are foreground. Default: computed "
-        "automatically with Otsu's method.",
+        help=(
+            "grayscale threshold in [0, 255] separating background from ink; "
+            "pixels darker than this are foreground. Default: computed "
+            "automatically with Otsu's method."
+        ),
     )
     parser.add_argument(
         "--invert",
         action="store_true",
-        help="treat light pixels as foreground instead of dark ones (for "
-        "white-on-black art)",
+        help=(
+            "treat light pixels as foreground instead of dark ones (for "
+            "white-on-black art)"
+        ),
     )
     parser.add_argument(
         "--simplify-tolerance",
         type=float,
         default=1.0,
         metavar="PX",
-        help="Douglas-Peucker tolerance, in pixels, for simplifying the "
-        "traced pixel outline before curve fitting (default: 1.0)",
+        help=(
+            "Douglas-Peucker tolerance, in pixels, for simplifying the "
+            "traced pixel outline before curve fitting (default: 1.0)"
+        ),
     )
     parser.add_argument(
         "--corner-threshold",
         type=float,
         default=45.0,
         metavar="DEGREES",
-        help="minimum turning angle, in degrees, for a vertex to be treated "
-        "as a hard corner rather than smoothed into a curve (default: 45)",
+        help=(
+            "minimum turning angle, in degrees, for a vertex to be treated "
+            "as a hard corner rather than smoothed into a curve (default: 45)"
+        ),
     )
     parser.add_argument(
         "--max-error",
         type=float,
         default=1.0,
         metavar="PX",
-        help="maximum allowed distance, in pixels, between the fitted "
-        "bezier curves and the traced outline (default: 1.0). Lower is "
-        "more faithful but produces more curve segments.",
+        help=(
+            "maximum allowed distance, in pixels, between the fitted "
+            "bezier curves and the traced outline (default: 1.0). Lower is "
+            "more faithful but produces more curve segments."
+        ),
     )
     parser.add_argument(
         "--min-area",
         type=float,
         default=2.0,
         metavar="PX2",
-        help="discard traced regions with an area smaller than this many "
-        "square pixels, to filter out speckle noise (default: 2.0)",
+        help=(
+            "discard traced regions with an area smaller than this many "
+            "square pixels, to filter out speckle noise (default: 2.0)"
+        ),
     )
     parser.add_argument(
         "--scale",
         type=float,
         default=1.0,
-        help="scale factor applied to output coordinates (default: 1.0, "
-        "i.e. 1 SVG unit per source pixel)",
+        help=(
+            "scale factor applied to output coordinates (default: 1.0, "
+            "i.e. 1 SVG unit per source pixel)"
+        ),
     )
     parser.add_argument(
         "--fill",

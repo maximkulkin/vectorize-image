@@ -2,6 +2,7 @@
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -15,9 +16,10 @@ from PySide6.QtGui import QKeyEvent, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from conftest import wait_until  # noqa: E402
+from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 
-def test_loading_an_image_does_not_trigger_vectorization(window, donut_path):
+def test_loading_an_image_does_not_trigger_vectorization(window: MainWindow, donut_path: str) -> None:
     """Automatic tracing can be slow on a large image, and plenty of
     sessions go straight to Manual Trace/Edit without ever needing it -- so
     opening an image should leave last_svg alone until a setting changes or
@@ -32,7 +34,7 @@ def test_loading_an_image_does_not_trigger_vectorization(window, donut_path):
     assert not window.save_action.isEnabled()
 
 
-def test_changing_a_setting_after_load_triggers_vectorization(window, donut_path):
+def test_changing_a_setting_after_load_triggers_vectorization(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     assert window.last_svg is None
 
@@ -44,7 +46,7 @@ def test_changing_a_setting_after_load_triggers_vectorization(window, donut_path
     assert window.save_action.isEnabled()
 
 
-def test_reselecting_the_automatic_tool_triggers_vectorization(window, donut_path):
+def test_reselecting_the_automatic_tool_triggers_vectorization(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window.trace_tool_action.setChecked(True)
     assert window.last_svg is None
@@ -53,7 +55,7 @@ def test_reselecting_the_automatic_tool_triggers_vectorization(window, donut_pat
     wait_until(lambda: window.last_svg is not None)
 
 
-def test_rapid_parameter_changes_coalesce_into_one_run(window, donut_path):
+def test_rapid_parameter_changes_coalesce_into_one_run(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -70,7 +72,7 @@ def test_rapid_parameter_changes_coalesce_into_one_run(window, donut_path):
     assert window._generation == gen_before + 1
 
 
-def test_opacity_slider_does_not_trigger_revectorization(window, donut_path):
+def test_opacity_slider_does_not_trigger_revectorization(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -84,7 +86,7 @@ def test_opacity_slider_does_not_trigger_revectorization(window, donut_path):
     assert window._generation == gen_before
 
 
-def test_manual_threshold_overrides_auto(window, donut_path):
+def test_manual_threshold_overrides_auto(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -97,7 +99,7 @@ def test_manual_threshold_overrides_auto(window, donut_path):
     wait_until(lambda: window._generation > gen_before and "threshold 200" in window.statusBar().currentMessage())
 
 
-def test_auto_threshold_reflects_computed_value(window, donut_path):
+def test_auto_threshold_reflects_computed_value(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -105,7 +107,7 @@ def test_auto_threshold_reflects_computed_value(window, donut_path):
     assert not window.threshold_row.slider.isEnabled()
 
 
-def test_invert_produces_a_topologically_correct_result(window, donut_path):
+def test_invert_produces_a_topologically_correct_result(window: MainWindow, donut_path: str) -> None:
     """With invert on, the background becomes one giant shape with the
     donut's ring as a hole -- regression test for the hierarchy grouping
     interacting correctly with inverted bitmaps (see the manual debugging
@@ -123,22 +125,22 @@ def test_invert_produces_a_topologically_correct_result(window, donut_path):
     assert "M0,0" in window.last_svg  # the giant background rectangle's corner
 
 
-def test_save_svg_writes_last_generated_content(window, donut_path, tmp_path, monkeypatch):
+def test_save_svg_writes_last_generated_content(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
 
     out_path = tmp_path / "out.svg"
-    monkeypatch.setattr(
-        "vectorize_image.gui.main_window.QFileDialog.getSaveFileName",
-        lambda *a, **k: (str(out_path), ""),
-    )
+    def fake_save_dialog(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        return (str(out_path), "")
+
+    monkeypatch.setattr("vectorize_image.gui.main_window.QFileDialog.getSaveFileName", fake_save_dialog)
     window._save_svg()
 
     assert out_path.read_text(encoding="utf-8") == window.last_svg
 
 
-def test_loading_a_new_image_clears_the_overlay_immediately(window, donut_path, tmp_path):
+def test_loading_a_new_image_clears_the_overlay_immediately(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -162,15 +164,15 @@ def test_loading_a_new_image_clears_the_overlay_immediately(window, donut_path, 
 def _wheel_event(pos: QPoint, angle_delta_y: int) -> QWheelEvent:
     return QWheelEvent(
         QPointF(pos), QPointF(pos), QPoint(0, 0), QPoint(0, angle_delta_y),
-        Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False,
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False,
     )
 
 
 def _key_event(key: int) -> QKeyEvent:
-    return QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier)
+    return QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
 
 
-def _pixel_error(view, scene_point_before, viewport_pos) -> float:
+def _pixel_error(view: QGraphicsView, scene_point_before: QPointF, viewport_pos: QPoint) -> float:
     """Distance, in viewport pixels, between where `viewport_pos` used to
     map in the scene and where it maps now -- i.e. how far the point that
     was under the cursor/anchor has drifted on screen.
@@ -179,7 +181,7 @@ def _pixel_error(view, scene_point_before, viewport_pos) -> float:
     return (delta.x() ** 2 + delta.y() ** 2) ** 0.5 * view.transform().m11()
 
 
-def test_wheel_zoom_anchors_on_the_cursor_point(window, donut_path):
+def test_wheel_zoom_anchors_on_the_cursor_point(window: MainWindow, donut_path: str) -> None:
     """The scene point under the cursor must stay under the cursor after a
     wheel-zoom -- a few pixels of drift is inherent to QGraphicsView's
     integer scrollbars, but it must not be a large, visible jump.
@@ -201,7 +203,7 @@ def test_wheel_zoom_anchors_on_the_cursor_point(window, donut_path):
         assert _pixel_error(view, scene_before, viewport_pos) < 3.0
 
 
-def test_keyboard_zoom_anchors_on_the_view_center(window, donut_path):
+def test_keyboard_zoom_anchors_on_the_view_center(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     view = window.view
 
@@ -221,7 +223,7 @@ def test_keyboard_zoom_anchors_on_the_view_center(window, donut_path):
     assert _pixel_error(view, scene_before, center) < 3.0
 
 
-def test_zoom_clamps_to_min_and_max_scale(window, donut_path):
+def test_zoom_clamps_to_min_and_max_scale(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     view = window.view
 
@@ -234,7 +236,7 @@ def test_zoom_clamps_to_min_and_max_scale(window, donut_path):
     assert view.transform().m11() == pytest.approx(view.MIN_SCALE)
 
 
-def test_arrow_keys_pan_the_view(window, donut_path):
+def test_arrow_keys_pan_the_view(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     view = window.view
 
@@ -245,20 +247,20 @@ def test_arrow_keys_pan_the_view(window, donut_path):
     h, v = view.horizontalScrollBar(), view.verticalScrollBar()
     start = (h.value(), v.value())
 
-    view.keyPressEvent(_key_event(Qt.Key_Right))
+    view.keyPressEvent(_key_event(Qt.Key.Key_Right))
     assert (h.value(), v.value()) == (start[0] + view.PAN_STEP, start[1])
 
-    view.keyPressEvent(_key_event(Qt.Key_Left))
+    view.keyPressEvent(_key_event(Qt.Key.Key_Left))
     assert (h.value(), v.value()) == start
 
-    view.keyPressEvent(_key_event(Qt.Key_Down))
+    view.keyPressEvent(_key_event(Qt.Key.Key_Down))
     assert (h.value(), v.value()) == (start[0], start[1] + view.PAN_STEP)
 
-    view.keyPressEvent(_key_event(Qt.Key_Up))
+    view.keyPressEvent(_key_event(Qt.Key.Key_Up))
     assert (h.value(), v.value()) == start
 
 
-def test_canvas_receives_focus_after_loading_an_image(window, donut_path):
+def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_path: str) -> None:
     """Keyboard pan/zoom needs the view to actually have focus; otherwise
     arrow/+/- key presses go nowhere until the user thinks to click the canvas.
     """
@@ -270,13 +272,13 @@ def test_canvas_receives_focus_after_loading_an_image(window, donut_path):
 # ------------------------------------------------------- lines & points
 
 
-def test_wireframe_hidden_by_default(window, donut_path):
+def test_wireframe_hidden_by_default(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     assert window.wireframe_checkbox.isChecked() is False
     assert not window.wireframe_item.isVisible()
 
 
-def test_wireframe_toggle_shows_it_without_revectorizing(window, donut_path):
+def test_wireframe_toggle_shows_it_without_revectorizing(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -292,7 +294,7 @@ def test_wireframe_toggle_shows_it_without_revectorizing(window, donut_path):
     assert not window.wireframe_item.isVisible()
 
 
-def test_wireframe_is_populated_from_the_vectorize_result(window, donut_path):
+def test_wireframe_is_populated_from_the_vectorize_result(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -303,7 +305,7 @@ def test_wireframe_is_populated_from_the_vectorize_result(window, donut_path):
     assert window.wireframe_item.boundingRect().height() == window.image_size[1]
 
 
-def test_wireframe_cleared_immediately_on_new_image_load(window, donut_path, tmp_path):
+def test_wireframe_cleared_immediately_on_new_image_load(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -319,17 +321,18 @@ def test_wireframe_cleared_immediately_on_new_image_load(window, donut_path, tmp
     wait_until(lambda: window.last_shapes is not None)
 
 
-def test_wireframe_paints_without_error_for_curved_and_straight_shapes(window, donut_path):
+def test_wireframe_paints_without_error_for_curved_and_straight_shapes(window: MainWindow, donut_path: str) -> None:
     """Smoke test the actual paint() path (curved segments get control-point
     handles, straight ones don't -- see _is_effectively_line filtering)."""
     from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QStyleOptionGraphicsItem
 
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
     window.wireframe_checkbox.setChecked(True)
 
-    image = QImage(*window.image_size, QImage.Format_ARGB32_Premultiplied)
+    image = QImage(*window.document.image_size, QImage.Format.Format_ARGB32_Premultiplied)
     painter = QPainter(image)
     window.wireframe_item.paint(painter, None, None)
     painter.end()  # must not raise

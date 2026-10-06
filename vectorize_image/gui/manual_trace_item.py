@@ -6,11 +6,15 @@ control points/handles plus hover and drag highlights, for the Edit tool.
 
 from __future__ import annotations
 
+from typing import override
+
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPen
-from PySide6.QtWidgets import QGraphicsItem
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from ..manual_trace import ManualTraceModel, closed_loop_shapes
+from ..typedefs import Bezier, Contour, Handle
 
 LINE_COLOR = QColor(0, 230, 118)  # matches the auto-trace wireframe's line color
 PREVIEW_COLOR = QColor(255, 214, 0)
@@ -33,12 +37,12 @@ SELECTION_MARKER_PAD_PX = 3.0
 
 
 class ManualTraceItem(QGraphicsItem):
-    def __init__(self, model: ManualTraceModel, parent=None):
+    def __init__(self, model: ManualTraceModel, parent: QGraphicsItem | None = None) -> None:
         super().__init__(parent)
-        self.model = model
-        self._bounds = QRectF()
-        self._fill_color = QColor("#e63946")
-        self._fill_opacity = 0.5
+        self.model: ManualTraceModel = model
+        self._bounds: QRectF = QRectF()
+        self._fill_color: QColor = QColor("#e63946")
+        self._fill_opacity: float = 0.5
         self._preview_bezier: list | None = None
         self._preview_snap_target: int | None = None
         self._edit_mode = False
@@ -52,7 +56,7 @@ class ManualTraceItem(QGraphicsItem):
         self._box_select: tuple | None = None  # (corner1, corner2) in scene coords, or None
         self._paint_brush: tuple | None = None  # (center, radius) in scene coords, or None
         self.setZValue(3)  # above the original image, filled overlay, and wireframe
-        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     def set_bounds(self, width: float, height: float) -> None:
         self.prepareGeometryChange()
@@ -99,10 +103,12 @@ class ManualTraceItem(QGraphicsItem):
     def refresh(self) -> None:
         self.update()
 
+    @override
     def boundingRect(self) -> QRectF:
         return self._bounds
 
-    def paint(self, painter, option, widget=None) -> None:
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         scale = painter.worldTransform().m11() or 1.0
         closed_loops = self.model.closed_loops()
         open_chains = self.model.open_chains()
@@ -120,7 +126,7 @@ class ManualTraceItem(QGraphicsItem):
             self._paint_box_select(painter)
             self._paint_paint_brush(painter)
 
-    def _paint_fill(self, painter, closed_loops) -> None:
+    def _paint_fill(self, painter: QPainter, closed_loops: list[Contour]) -> None:
         shapes = closed_loop_shapes(closed_loops)
         if not shapes:
             return
@@ -135,17 +141,17 @@ class ManualTraceItem(QGraphicsItem):
             painter.drawPath(path)
         painter.setOpacity(1.0)
 
-    def _paint_lines(self, painter, closed_loops, open_chains) -> None:
+    def _paint_lines(self, painter: QPainter, closed_loops: list[Contour], open_chains: list[list[Bezier]]) -> None:
         pen = QPen(LINE_COLOR, LINE_WIDTH_PX)
         pen.setCosmetic(True)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         for loop in closed_loops:
             painter.drawPath(_bezier_path(loop, closed=True))
         for chain in open_chains:
             painter.drawPath(_bezier_path(chain, closed=False))
 
-    def _paint_preview(self, painter) -> None:
+    def _paint_preview(self, painter: QPainter) -> None:
         if self._preview_bezier is None:
             return
         pen = QPen(PREVIEW_COLOR, LINE_WIDTH_PX, Qt.DashLine)
@@ -154,31 +160,31 @@ class ManualTraceItem(QGraphicsItem):
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(_bezier_path([self._preview_bezier], closed=False))
 
-    def _paint_all_control_points(self, painter, scale: float) -> None:
+    def _paint_all_control_points(self, painter: QPainter, scale: float) -> None:
         """Edit mode: show every segment's control points and handle lines
         (not just the preview's), since they're all draggable here.
         """
         control_r = CONTROL_RADIUS_PX / scale
 
-        handle_pen = QPen(HANDLE_LINE_COLOR, 1.0, Qt.DashLine)
+        handle_pen = QPen(HANDLE_LINE_COLOR, 1.0, Qt.PenStyle.DashLine)
         handle_pen.setCosmetic(True)
         painter.setPen(handle_pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         for seg in self.model.segments:
             p0, p1, p2, p3 = (QPointF(float(p[0]), float(p[1])) for p in seg.bezier)
             painter.drawLine(p0, p1)
             painter.drawLine(p3, p2)
 
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(CONTROL_COLOR)
         for seg in self.model.segments:
             for p in (seg.bezier[1], seg.bezier[2]):
                 painter.drawEllipse(QPointF(float(p[0]), float(p[1])), control_r, control_r)
 
-    def _paint_selection(self, painter, scale: float) -> None:
+    def _paint_selection(self, painter: QPainter, scale: float) -> None:
         if not self._selection:
             return
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
 
         if self._selection_mode == "points":
             pen = QPen(SELECTION_COLOR, 2.5)
@@ -210,13 +216,13 @@ class ManualTraceItem(QGraphicsItem):
                 pos = self.model.nodes[node_id]
                 painter.drawRect(QRectF(float(pos[0]) - r, float(pos[1]) - r, 2 * r, 2 * r))
 
-    def _paint_hover_and_active(self, painter, scale: float) -> None:
+    def _paint_hover_and_active(self, painter: QPainter, scale: float) -> None:
         if self._selection_mode == "points":
             self._paint_point_hover_and_active(painter, scale)
         else:
             self._paint_curve_or_contour_hover_and_active(painter)
 
-    def _paint_point_hover_and_active(self, painter, scale: float) -> None:
+    def _paint_point_hover_and_active(self, painter: QPainter, scale: float) -> None:
         highlight_r = HANDLE_HIGHLIGHT_RADIUS_PX / scale
         painter.setBrush(Qt.NoBrush)
         for item, color, width in (
@@ -233,7 +239,7 @@ class ManualTraceItem(QGraphicsItem):
             painter.setPen(pen)
             painter.drawEllipse(QPointF(float(pos[0]), float(pos[1])), highlight_r, highlight_r)
 
-    def _paint_curve_or_contour_hover_and_active(self, painter) -> None:
+    def _paint_curve_or_contour_hover_and_active(self, painter: QPainter) -> None:
         painter.setBrush(Qt.NoBrush)
         for item, color in ((self._hover_handle, SNAP_HIGHLIGHT_COLOR), (self._active_handle, ACTIVE_COLOR)):
             if item is None:
@@ -248,7 +254,7 @@ class ManualTraceItem(QGraphicsItem):
             for seg_idx in seg_indices:
                 painter.drawPath(_bezier_path([self.model.segments[seg_idx].bezier], closed=False))
 
-    def _paint_box_select(self, painter) -> None:
+    def _paint_box_select(self, painter: QPainter) -> None:
         if self._box_select is None:
             return
         (x0, y0), (x1, y1) = self._box_select
@@ -261,7 +267,7 @@ class ManualTraceItem(QGraphicsItem):
         painter.setBrush(fill)
         painter.drawRect(rect)
 
-    def _paint_paint_brush(self, painter) -> None:
+    def _paint_paint_brush(self, painter: QPainter) -> None:
         if self._paint_brush is None:
             return
         center, radius = self._paint_brush
@@ -271,18 +277,18 @@ class ManualTraceItem(QGraphicsItem):
         painter.setBrush(Qt.NoBrush)
         painter.drawEllipse(QPointF(float(center[0]), float(center[1])), radius, radius)
 
-    def _safe_handle_position(self, handle: tuple):
+    def _safe_handle_position(self, handle: tuple[float, float]):
         try:
             return self.model.get_handle_position(handle)
         except (KeyError, IndexError):
             return None
 
-    def _paint_nodes(self, painter, scale: float) -> None:
+    def _paint_nodes(self, painter: QPainter, scale: float) -> None:
         node_r = NODE_RADIUS_PX / scale
         active_r = ACTIVE_RING_RADIUS_PX / scale
         highlight_r = SNAP_HIGHLIGHT_RADIUS_PX / scale
 
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
         for node, pos in self.model.nodes.items():
             point = QPointF(float(pos[0]), float(pos[1]))
             degree = self.model.degree(node)
@@ -305,11 +311,11 @@ class ManualTraceItem(QGraphicsItem):
             ring_pen = QPen(ACTIVE_COLOR, 2.0)
             ring_pen.setCosmetic(True)
             painter.setPen(ring_pen)
-            painter.setBrush(Qt.NoBrush)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(point, active_r, active_r)
 
 
-def _bezier_path(beziers: list, closed: bool) -> QPainterPath:
+def _bezier_path(beziers: list[Bezier], closed: bool) -> QPainterPath:
     path = QPainterPath()
     if not beziers:
         return path

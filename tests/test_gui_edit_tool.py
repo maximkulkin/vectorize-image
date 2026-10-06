@@ -15,48 +15,53 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from conftest import wait_until  # noqa: E402
 from vectorize_image import curve_fit  # noqa: E402
+from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 
-def _press(window, pos, shift=False):
+type _Pos = tuple[float, float] | np.ndarray
+
+
+def _press(window: MainWindow, pos: _Pos, shift: bool = False) -> None:
     vp = window.view.mapFromScene(float(pos[0]), float(pos[1]))
-    mod = Qt.ShiftModifier if shift else Qt.NoModifier
-    QTest.mousePress(window.view.viewport(), Qt.LeftButton, mod, vp)
+    mod = Qt.KeyboardModifier.ShiftModifier if shift else Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(window.view.viewport(), Qt.MouseButton.LeftButton, mod, vp)
     QApplication.processEvents()
 
 
-def _move(window, pos):
+def _move(window: MainWindow, pos: _Pos) -> None:
     vp = window.view.mapFromScene(float(pos[0]), float(pos[1]))
     QTest.mouseMove(window.view.viewport(), vp)
     QApplication.processEvents()
 
 
-def _release(window, pos):
+def _release(window: MainWindow, pos: _Pos) -> None:
     vp = window.view.mapFromScene(float(pos[0]), float(pos[1]))
-    QTest.mouseRelease(window.view.viewport(), Qt.LeftButton, Qt.NoModifier, vp)
+    QTest.mouseRelease(window.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, vp)
     QApplication.processEvents()
 
 
-def _drag(window, start, end, shift=False):
+def _drag(window: MainWindow, start: _Pos, end: _Pos, shift: bool = False) -> None:
     _press(window, start, shift=shift)
     _move(window, end)
     _release(window, end)
 
 
-def _click(window, pos, shift=False):
+def _click(window: MainWindow, pos: _Pos, shift: bool = False) -> None:
     vp = window.view.mapFromScene(float(pos[0]), float(pos[1]))
-    mod = Qt.ShiftModifier if shift else Qt.NoModifier
-    QTest.mousePress(window.view.viewport(), Qt.LeftButton, mod, vp)
+    mod = Qt.KeyboardModifier.ShiftModifier if shift else Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(window.view.viewport(), Qt.MouseButton.LeftButton, mod, vp)
     QApplication.processEvents()
-    QTest.mouseRelease(window.view.viewport(), Qt.LeftButton, mod, vp)
+    QTest.mouseRelease(window.view.viewport(), Qt.MouseButton.LeftButton, mod, vp)
     QApplication.processEvents()
 
 
-def _segment_midpoint(window, index):
+def _segment_midpoint(window: MainWindow, index: int) -> tuple[float, float]:
     seg = window.manual_model.segments[index]
-    return tuple(curve_fit._q(seg.bezier, 0.5))
+    x, y = curve_fit.bezier_point(seg.bezier, 0.5)
+    return (float(x), float(y))
 
 
-def test_edit_tool_seeds_from_the_automatic_result(window, diamond_path):
+def test_edit_tool_seeds_from_the_automatic_result(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -70,7 +75,7 @@ def test_edit_tool_seeds_from_the_automatic_result(window, diamond_path):
     assert window.vector_item.isVisible() is False
 
 
-def test_edit_tool_does_not_reseed_over_existing_manual_work(window, diamond_path):
+def test_edit_tool_does_not_reseed_over_existing_manual_work(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -85,7 +90,7 @@ def test_edit_tool_does_not_reseed_over_existing_manual_work(window, diamond_pat
     assert np.allclose(window.manual_model.nodes[node_id], moved_pos)
 
 
-def test_edit_tool_disables_curve_fit_settings_but_not_threshold(window, diamond_path):
+def test_edit_tool_disables_curve_fit_settings_but_not_threshold(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -99,7 +104,7 @@ def test_edit_tool_disables_curve_fit_settings_but_not_threshold(window, diamond
     assert window.auto_threshold_checkbox.isEnabled()
 
 
-def test_dragging_an_anchor_moves_it_and_updates_live(window, diamond_path):
+def test_dragging_an_anchor_moves_it_and_updates_live(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -117,7 +122,7 @@ def test_dragging_an_anchor_moves_it_and_updates_live(window, diamond_path):
     assert window._edit_drag_origin is None
 
 
-def test_dragging_a_control_point_only_affects_its_own_segment(window, diamond_path):
+def test_dragging_a_control_point_only_affects_its_own_segment(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -132,7 +137,7 @@ def test_dragging_a_control_point_only_affects_its_own_segment(window, diamond_p
     assert all(np.allclose(a, b) for a, b in zip(window.manual_model.segments[1].bezier, other_before))
 
 
-def test_undo_redo_actions_track_the_edit_history(window, diamond_path):
+def test_undo_redo_actions_track_the_edit_history(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -158,7 +163,7 @@ def test_undo_redo_actions_track_the_edit_history(window, diamond_path):
     assert np.allclose(window.manual_model.nodes[node_id], dragged)
 
 
-def test_undo_redo_actions_disabled_in_automatic_tool(window, diamond_path):
+def test_undo_redo_actions_disabled_in_automatic_tool(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -173,7 +178,7 @@ def test_undo_redo_actions_disabled_in_automatic_tool(window, diamond_path):
     assert not window.redo_action.isEnabled()
 
 
-def test_a_whole_drag_is_a_single_undo_step_not_one_per_frame(window, diamond_path):
+def test_a_whole_drag_is_a_single_undo_step_not_one_per_frame(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -191,7 +196,7 @@ def test_a_whole_drag_is_a_single_undo_step_not_one_per_frame(window, diamond_pa
     assert np.allclose(window.manual_model.nodes[node_id], original)
 
 
-def test_escape_cancels_an_in_progress_drag(window, diamond_path):
+def test_escape_cancels_an_in_progress_drag(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -211,7 +216,7 @@ def test_escape_cancels_an_in_progress_drag(window, diamond_path):
     assert not window.redo_action.isEnabled()
 
 
-def test_manual_trace_and_edit_tool_share_the_same_underlying_data(window, diamond_path):
+def test_manual_trace_and_edit_tool_share_the_same_underlying_data(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -226,7 +231,7 @@ def test_manual_trace_and_edit_tool_share_the_same_underlying_data(window, diamo
     assert len(window.manual_model.closed_loops()) == 1
 
 
-def test_clear_manual_trace_is_undoable_from_the_gui(window, diamond_path):
+def test_clear_manual_trace_is_undoable_from_the_gui(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -243,7 +248,7 @@ def test_clear_manual_trace_is_undoable_from_the_gui(window, diamond_path):
 # --------------------------------------------------------- selection & work mode
 
 
-def test_select_mode_defaults_to_points_and_is_hidden_outside_edit_tool(window, diamond_path):
+def test_select_mode_defaults_to_points_and_is_hidden_outside_edit_tool(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -263,7 +268,7 @@ def test_select_mode_defaults_to_points_and_is_hidden_outside_edit_tool(window, 
     assert not window.points_mode_action.isVisible()
 
 
-def test_clicking_an_anchor_in_points_mode_selects_it_and_enables_delete(window, diamond_path):
+def test_clicking_an_anchor_in_points_mode_selects_it_and_enables_delete(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -276,7 +281,7 @@ def test_clicking_an_anchor_in_points_mode_selects_it_and_enables_delete(window,
     assert window.delete_action.isEnabled()
 
 
-def test_shift_click_toggles_points_into_and_out_of_the_selection(window, diamond_path):
+def test_shift_click_toggles_points_into_and_out_of_the_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -291,7 +296,7 @@ def test_shift_click_toggles_points_into_and_out_of_the_selection(window, diamon
     assert window._selection == {("anchor", id_b)}
 
 
-def test_clicking_empty_space_clears_the_selection(window, diamond_path):
+def test_clicking_empty_space_clears_the_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -306,7 +311,7 @@ def test_clicking_empty_space_clears_the_selection(window, diamond_path):
     assert not window.delete_action.isEnabled()
 
 
-def test_clicking_an_already_selected_group_member_keeps_the_group_selected(window, diamond_path):
+def test_clicking_an_already_selected_group_member_keeps_the_group_selected(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -321,7 +326,7 @@ def test_clicking_an_already_selected_group_member_keeps_the_group_selected(wind
     assert window._selection == {("anchor", id_a), ("anchor", id_b)}
 
 
-def test_switching_selection_mode_clears_the_selection(window, diamond_path):
+def test_switching_selection_mode_clears_the_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -336,27 +341,27 @@ def test_switching_selection_mode_clears_the_selection(window, diamond_path):
     assert window._selection_mode == "curves"
 
 
-def test_number_key_shortcuts_switch_selection_mode(window, diamond_path):
+def test_number_key_shortcuts_switch_selection_mode(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
     window.edit_tool_action.setChecked(True)
     assert window._selection_mode == "points"
 
-    QTest.keyClick(window, Qt.Key_2)
+    QTest.keyClick(window, Qt.Key.Key_2)
     assert window._selection_mode == "curves"
     assert window.curves_mode_action.isChecked()
 
-    QTest.keyClick(window, Qt.Key_3)
+    QTest.keyClick(window, Qt.Key.Key_3)
     assert window._selection_mode == "contours"
     assert window.contours_mode_action.isChecked()
 
-    QTest.keyClick(window, Qt.Key_1)
+    QTest.keyClick(window, Qt.Key.Key_1)
     assert window._selection_mode == "points"
     assert window.points_mode_action.isChecked()
 
 
-def test_escape_clears_the_selection_when_not_dragging(window, diamond_path):
+def test_escape_clears_the_selection_when_not_dragging(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -370,7 +375,7 @@ def test_escape_clears_the_selection_when_not_dragging(window, diamond_path):
     assert window._selection == set()
 
 
-def test_curves_mode_click_selects_the_whole_segment(window, diamond_path):
+def test_curves_mode_click_selects_the_whole_segment(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -384,7 +389,7 @@ def test_curves_mode_click_selects_the_whole_segment(window, diamond_path):
     assert window.delete_action.isEnabled()
 
 
-def test_contours_mode_click_selects_the_whole_component(window, donut_path):
+def test_contours_mode_click_selects_the_whole_component(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -405,7 +410,7 @@ def test_contours_mode_click_selects_the_whole_component(window, donut_path):
     assert got_segments == expected_segments
 
 
-def test_contours_mode_shift_click_recognizes_any_point_on_the_same_contour(window, donut_path):
+def test_contours_mode_shift_click_recognizes_any_point_on_the_same_contour(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -423,7 +428,7 @@ def test_contours_mode_shift_click_recognizes_any_point_on_the_same_contour(wind
     assert window._selection == set()
 
 
-def test_dragging_a_multi_point_selection_moves_all_of_it_as_one_undo_step(window, diamond_path):
+def test_dragging_a_multi_point_selection_moves_all_of_it_as_one_undo_step(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -441,7 +446,7 @@ def test_dragging_a_multi_point_selection_moves_all_of_it_as_one_undo_step(windo
     assert len(window.manual_model._undo_stack) == 1
 
 
-def test_dragging_a_contour_selection_moves_it_rigidly(window, donut_path):
+def test_dragging_a_contour_selection_moves_it_rigidly(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -459,7 +464,7 @@ def test_dragging_a_contour_selection_moves_it_rigidly(window, donut_path):
         assert np.allclose(window.manual_model.nodes[n] - original, [10, -4], atol=1.0)
 
 
-def test_delete_action_removes_selected_points_and_is_undoable(window, diamond_path):
+def test_delete_action_removes_selected_points_and_is_undoable(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -478,7 +483,7 @@ def test_delete_action_removes_selected_points_and_is_undoable(window, diamond_p
     assert node_id in window.manual_model.nodes
 
 
-def test_delete_action_disabled_with_nothing_selected(window, diamond_path):
+def test_delete_action_disabled_with_nothing_selected(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -487,7 +492,7 @@ def test_delete_action_disabled_with_nothing_selected(window, diamond_path):
     assert not window.delete_action.isEnabled()
 
 
-def test_delete_action_in_curves_mode_removes_segment_but_keeps_endpoints(window, diamond_path):
+def test_delete_action_in_curves_mode_removes_segment_but_keeps_endpoints(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -504,7 +509,7 @@ def test_delete_action_in_curves_mode_removes_segment_but_keeps_endpoints(window
     assert all(not (s.start == start_id and s.end == end_id) for s in window.manual_model.segments)
 
 
-def test_delete_action_in_contours_mode_removes_the_whole_contour(window, donut_path):
+def test_delete_action_in_contours_mode_removes_the_whole_contour(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -527,7 +532,7 @@ def test_delete_action_in_contours_mode_removes_the_whole_contour(window, donut_
 # --------------------------------------------------- box & paint select
 
 
-def test_move_select_is_the_default_select_tool(window, diamond_path):
+def test_move_select_is_the_default_select_tool(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -537,7 +542,7 @@ def test_move_select_is_the_default_select_tool(window, diamond_path):
     assert window._select_tool == "move"
 
 
-def test_select_tool_actions_are_hidden_outside_edit_tool(window, diamond_path):
+def test_select_tool_actions_are_hidden_outside_edit_tool(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -554,7 +559,7 @@ def test_select_tool_actions_are_hidden_outside_edit_tool(window, diamond_path):
     assert not window.box_select_action.isVisible()
 
 
-def test_box_select_replaces_selection_with_the_anchor_it_touches(window, diamond_path):
+def test_box_select_replaces_selection_with_the_anchor_it_touches(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -567,7 +572,7 @@ def test_box_select_replaces_selection_with_the_anchor_it_touches(window, diamon
     assert window._selection == {("anchor", node_id)}
 
 
-def test_box_select_does_not_require_full_containment(window, diamond_path):
+def test_box_select_does_not_require_full_containment(window: MainWindow, diamond_path: str) -> None:
     """A box that only grazes a curve -- containing neither endpoint --
     still selects it in Curves mode; overlap is enough."""
     window._load_image(diamond_path)
@@ -583,7 +588,7 @@ def test_box_select_does_not_require_full_containment(window, diamond_path):
     assert window._selection == {0}
 
 
-def test_box_select_with_shift_adds_to_the_existing_selection(window, diamond_path):
+def test_box_select_with_shift_adds_to_the_existing_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -598,7 +603,7 @@ def test_box_select_with_shift_adds_to_the_existing_selection(window, diamond_pa
     assert window._selection == {("anchor", id_a), ("anchor", id_b)}
 
 
-def test_box_select_over_empty_space_clears_the_selection(window, diamond_path):
+def test_box_select_over_empty_space_clears_the_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -613,7 +618,7 @@ def test_box_select_over_empty_space_clears_the_selection(window, diamond_path):
     assert window._selection == set()
 
 
-def test_box_select_shows_a_live_rectangle_only_while_dragging(window, diamond_path):
+def test_box_select_shows_a_live_rectangle_only_while_dragging(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -629,7 +634,7 @@ def test_box_select_shows_a_live_rectangle_only_while_dragging(window, diamond_p
     assert window.manual_trace_item._box_select is None
 
 
-def test_box_select_escape_cancels_without_changing_the_selection(window, diamond_path):
+def test_box_select_escape_cancels_without_changing_the_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -647,7 +652,7 @@ def test_box_select_escape_cancels_without_changing_the_selection(window, diamon
     assert window.manual_trace_item._box_select is None
 
 
-def test_paint_radius_row_visible_only_for_the_paint_tool(window, diamond_path):
+def test_paint_radius_row_visible_only_for_the_paint_tool(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -661,7 +666,7 @@ def test_paint_radius_row_visible_only_for_the_paint_tool(window, diamond_path):
     assert not window.paint_radius_widget.isVisible()
 
 
-def test_switching_away_from_edit_tool_hides_the_paint_radius_row(window, diamond_path):
+def test_switching_away_from_edit_tool_hides_the_paint_radius_row(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -673,7 +678,7 @@ def test_switching_away_from_edit_tool_hides_the_paint_radius_row(window, diamon
     assert not window.paint_radius_widget.isVisible()
 
 
-def test_paint_select_adds_items_the_brush_passes_over(window, diamond_path):
+def test_paint_select_adds_items_the_brush_passes_over(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -688,7 +693,7 @@ def test_paint_select_adds_items_the_brush_passes_over(window, diamond_path):
     assert window._selection == {("anchor", id_a), ("anchor", id_b)}
 
 
-def test_paint_select_moving_back_over_an_item_does_not_toggle_it_off(window, diamond_path):
+def test_paint_select_moving_back_over_an_item_does_not_toggle_it_off(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -704,7 +709,7 @@ def test_paint_select_moving_back_over_an_item_does_not_toggle_it_off(window, di
     assert len(window._selection) == 1
 
 
-def test_paint_select_without_shift_clears_the_previous_selection_first(window, diamond_path):
+def test_paint_select_without_shift_clears_the_previous_selection_first(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -720,7 +725,7 @@ def test_paint_select_without_shift_clears_the_previous_selection_first(window, 
     assert window._selection == {("anchor", id_b)}
 
 
-def test_paint_select_with_shift_keeps_the_existing_selection(window, diamond_path):
+def test_paint_select_with_shift_keeps_the_existing_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -736,7 +741,7 @@ def test_paint_select_with_shift_keeps_the_existing_selection(window, diamond_pa
     assert window._selection == {("anchor", id_a), ("anchor", id_b)}
 
 
-def test_paint_select_escape_reverts_to_the_pre_drag_selection(window, diamond_path):
+def test_paint_select_escape_reverts_to_the_pre_drag_selection(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -753,7 +758,7 @@ def test_paint_select_escape_reverts_to_the_pre_drag_selection(window, diamond_p
     assert window._selection == {("anchor", id_a)}
 
 
-def test_paint_select_shows_a_brush_circle_while_hovering(window, diamond_path):
+def test_paint_select_shows_a_brush_circle_while_hovering(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)

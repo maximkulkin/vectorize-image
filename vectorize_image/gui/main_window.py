@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
 
-from PySide6.QtCore import QByteArray, QRectF, Qt, QTimer, QThreadPool
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, QTimer, QThreadPool
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -71,7 +72,20 @@ class _InteractionAdapter:
         self.on_escape = on_escape
 
 
-DEFAULTS = {
+class DefaultSettings(TypedDict):
+    auto_threshold: bool
+    threshold: float
+    invert: bool
+    simplify_tolerance: float
+    corner_threshold: float
+    max_error: float
+    min_area: float
+    overlay_color: str
+    opacity: int
+    show_wireframe: bool
+
+
+DEFAULTS: DefaultSettings = {
     "auto_threshold": True,
     "threshold": 128.0,
     "invert": False,
@@ -86,36 +100,62 @@ DEFAULTS = {
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    # Widgets and actions, created by the _build_* helpers __init__ calls.
+    save_action: QAction
+    undo_action: QAction
+    redo_action: QAction
+    delete_action: QAction
+    auto_tool_action: QAction
+    trace_tool_action: QAction
+    edit_tool_action: QAction
+    _tool_action_group: QActionGroup
+    points_mode_action: QAction
+    curves_mode_action: QAction
+    contours_mode_action: QAction
+    _selection_mode_actions: tuple[QAction, ...]
+    _selection_action_group: QActionGroup
+    move_select_action: QAction
+    box_select_action: QAction
+    paint_select_action: QAction
+    _select_tool_actions: tuple[QAction, ...]
+    _select_tool_action_group: QActionGroup
+    _selection_toolbar_separator: QAction
+    _select_toolbar_separator: QAction
+    manual_group: QGroupBox
+    manual_hint_label: QLabel
+    paint_radius_widget: QWidget
+    paint_radius_row: SliderSpinRow
+    auto_threshold_checkbox: QCheckBox
+    threshold_row: SliderSpinRow
+    invert_checkbox: QCheckBox
+    simplify_row: SliderSpinRow
+    corner_row: SliderSpinRow
+    max_error_row: SliderSpinRow
+    min_area_row: SliderSpinRow
+    opacity_slider: QSlider
+    opacity_label: QLabel
+    color_button: QPushButton
+    wireframe_checkbox: QCheckBox
+    # Tools, created by _build_tools.
+    auto_tool: AutoTool
+    trace_tool: TraceTool
+    edit_tool: EditTool
+    tool: Tool  # the active one
+
+    def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Vectorize Image")
         self.resize(1300, 850)
 
-        self.gray = None  # loaded grayscale numpy array, feeds the vectorizer
-        self.image_size = (0, 0)  # (width, height)
-        self.last_svg: str | None = None
-        self.last_shapes: list | None = None
-        self._generation = 0
-        self._overlay_color = QColor(DEFAULTS["overlay_color"])
-        self._tool = "auto"  # "auto", "trace", or "edit"
-        self.manual_model = ManualTraceModel()
-        self._selection_mode = "points"  # "points", "curves", or "contours" -- edit tool only
-        self._selection: set = set()
-        self._select_tool = "move"  # "move", "box", or "paint" -- edit tool only
-        self._edit_drag_origin: tuple | None = None  # press position, for computing a drag's delta
-        self._edit_drag_checkpointed = False  # lazy: only checkpoint once actual movement happens
-        self._box_select_origin: tuple | None = None
-        self._box_select_shift = False
-        self._paint_active = False
-        self._paint_press_selection: set | None = None
-        self._last_edit_pos: tuple | None = None
+        self._generation: int = 0
+        self._overlay_color: QColor = QColor(DEFAULTS["overlay_color"])
 
-        self.threadpool = QThreadPool.globalInstance()
-        self.signals = WorkerSignals()
+        self.threadpool: QThreadPool = QThreadPool.globalInstance()
+        self.signals: WorkerSignals = WorkerSignals()
         self.signals.finished.connect(self._on_vectorize_finished)
         self.signals.failed.connect(self._on_vectorize_failed)
 
-        self._debounce = QTimer(self)
+        self._debounce: QTimer = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._run_vectorize)
 
@@ -127,7 +167,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self._build_actions_and_menus()
 
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_canvas())
         splitter.addWidget(self._build_sidebar())
         splitter.setStretchFactor(0, 1)
@@ -139,26 +179,26 @@ class MainWindow(QMainWindow):
 
     def _build_actions_and_menus(self) -> None:
         open_action = QAction(_icon("open"), "&Open Image...", self)
-        open_action.setShortcut(QKeySequence.Open)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_image)
 
         self.save_action = QAction(_icon("save"), "&Save Vector as SVG...", self)
-        self.save_action.setShortcut(QKeySequence.Save)
+        self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.setEnabled(False)
         self.save_action.triggered.connect(self._save_svg)
 
         self.undo_action = QAction(_icon("undo"), "&Undo", self)
-        self.undo_action.setShortcut(QKeySequence.Undo)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setEnabled(False)
         self.undo_action.triggered.connect(self._undo)
 
         self.redo_action = QAction(_icon("redo"), "&Redo", self)
-        self.redo_action.setShortcut(QKeySequence.Redo)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setEnabled(False)
         self.redo_action.triggered.connect(self._redo)
 
         self.delete_action = QAction("&Delete Selection", self)
-        self.delete_action.setShortcuts([QKeySequence.Delete, QKeySequence(Qt.Key_Backspace)])
+        self.delete_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Delete), QKeySequence(Qt.Key.Key_Backspace)])
         self.delete_action.setEnabled(False)
         self.delete_action.triggered.connect(self._delete_selection)
 
@@ -184,15 +224,15 @@ class MainWindow(QMainWindow):
         self.points_mode_action = QAction(_icon("points"), "&Points", self)
         self.points_mode_action.setCheckable(True)
         self.points_mode_action.setChecked(True)
-        self.points_mode_action.setShortcut(QKeySequence(Qt.Key_1))
+        self.points_mode_action.setShortcut(QKeySequence(Qt.Key.Key_1))
         self.points_mode_action.setToolTip("Select points (1)")
         self.curves_mode_action = QAction(_icon("curves"), "&Curves", self)
         self.curves_mode_action.setCheckable(True)
-        self.curves_mode_action.setShortcut(QKeySequence(Qt.Key_2))
+        self.curves_mode_action.setShortcut(QKeySequence(Qt.Key.Key_2))
         self.curves_mode_action.setToolTip("Select curves (2)")
         self.contours_mode_action = QAction(_icon("contours"), "C&ontours", self)
         self.contours_mode_action.setCheckable(True)
-        self.contours_mode_action.setShortcut(QKeySequence(Qt.Key_3))
+        self.contours_mode_action.setShortcut(QKeySequence(Qt.Key.Key_3))
         self.contours_mode_action.setToolTip("Select contours (3)")
 
         self._selection_mode_actions = (
@@ -237,15 +277,15 @@ class MainWindow(QMainWindow):
         fit_action.triggered.connect(self._fit_view)
 
         zoom_in_action = QAction(_icon("zoom_in"), "Zoom &In", self)
-        zoom_in_action.setShortcuts([QKeySequence.ZoomIn, QKeySequence(Qt.Key_Plus), QKeySequence(Qt.Key_Equal)])
+        zoom_in_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.ZoomIn), QKeySequence(Qt.Key.Key_Plus), QKeySequence(Qt.Key.Key_Equal)])
         zoom_in_action.triggered.connect(lambda: self.view.zoom_in())
 
         zoom_out_action = QAction(_icon("zoom_out"), "Zoom &Out", self)
-        zoom_out_action.setShortcuts([QKeySequence.ZoomOut, QKeySequence(Qt.Key_Minus)])
+        zoom_out_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.ZoomOut), QKeySequence(Qt.Key.Key_Minus)])
         zoom_out_action.triggered.connect(lambda: self.view.zoom_out())
 
         quit_action = QAction("&Quit", self)
-        quit_action.setShortcut(QKeySequence.Quit)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
 
         file_menu = self.menuBar().addMenu("&File")
@@ -274,14 +314,14 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.delete_action)
 
         view_toolbar = self.addToolBar("View")
-        view_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        view_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         view_toolbar.addAction(zoom_in_action)
         view_toolbar.addAction(zoom_out_action)
         view_toolbar.addAction(fit_action)
 
         self.addToolBarBreak()
         tools_toolbar = self.addToolBar("Tools")
-        tools_toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        tools_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         tools_toolbar.addAction(self.auto_tool_action)
         tools_toolbar.addAction(self.trace_tool_action)
         tools_toolbar.addAction(self.edit_tool_action)
@@ -320,7 +360,7 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         layout = QVBoxLayout(sidebar)
-        layout.setAlignment(Qt.AlignTop)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         layout.addWidget(self._build_manual_group())
         layout.addWidget(self._build_vectorization_group())
@@ -402,7 +442,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
 
         opacity_row = QHBoxLayout()
-        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(DEFAULTS["opacity"])
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
@@ -543,7 +583,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- tools
 
-    def _set_tool(self, tool: str) -> None:
+    def _set_tool(self, tool: Tool) -> None:
         if tool == self._tool:
             return
         self._exit_tool(self._tool)
@@ -1013,12 +1053,12 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------- vectorize
 
-    def _on_param_changed(self, *_args) -> None:
+    def _on_param_changed(self, *_args: object) -> None:
         if self.gray is None:
             return
         self._debounce.start(DEBOUNCE_MS)
 
-    def _collect_params(self) -> dict:
+    def _collect_params(self) -> VectorizeParams:
         return {
             "threshold": None if self.auto_threshold_checkbox.isChecked() else self.threshold_row.value(),
             "invert": self.invert_checkbox.isChecked(),
@@ -1043,7 +1083,7 @@ class MainWindow(QMainWindow):
         self.threadpool.start(task)
 
     def _on_vectorize_finished(
-        self, generation: int, svg: str, shapes: list, threshold_used: float, elapsed_ms: float
+        self, generation: int, svg: str, shapes: list[Shape], threshold_used: float, elapsed_ms: float
     ) -> None:
         if generation != self._generation:
             return  # a newer request superseded this one; drop the stale result

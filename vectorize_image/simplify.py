@@ -76,7 +76,7 @@ def compute_shape_roots(polygons: list[np.ndarray]) -> list[int]:
                     best_area, best_parent = areas[j], j
         parent[i] = best_parent
 
-    roots = []
+    roots: list[int] = []
     for i in range(n):
         root, seen = i, {i}
         while True:
@@ -104,11 +104,13 @@ def _douglas_peucker(points: np.ndarray, epsilon: float) -> np.ndarray:
     if len(points) < 3:
         return points
 
-    start, end = points[0], points[-1]
+    start: np.ndarray = points[0]
+    end: np.ndarray = points[-1]
     line_vec = end - start
     line_len = float(np.hypot(line_vec[0], line_vec[1]))
 
     middle = points[1:-1]
+    dists: np.ndarray
     if line_len == 0:
         dists = np.linalg.norm(middle - start, axis=1)
     else:
@@ -116,7 +118,7 @@ def _douglas_peucker(points: np.ndarray, epsilon: float) -> np.ndarray:
         dists = np.abs(np.dot(middle - start, normal))
 
     max_idx_local = int(np.argmax(dists))
-    max_dist = dists[max_idx_local]
+    max_dist = float(dists[max_idx_local])
 
     if max_dist <= epsilon:
         return np.array([start, end])
@@ -181,7 +183,7 @@ def split_into_chains(points: np.ndarray, corner_mask: np.ndarray) -> list[np.nd
     if not corner_indices:
         corner_indices = [0]
 
-    chains = []
+    chains: list[np.ndarray] = []
     for k in range(len(corner_indices)):
         start = corner_indices[k]
         end = corner_indices[(k + 1) % len(corner_indices)]

@@ -2,6 +2,8 @@
 
 import os
 import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import pytest
 
@@ -16,12 +18,12 @@ from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 
 @pytest.fixture(scope="session")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
+def qapp() -> QApplication:
+    app = QApplication.instance()
+    return app if isinstance(app, QApplication) else QApplication([])
 
 
-def wait_until(predicate, timeout=10.0):
+def wait_until(predicate: Callable[[], object], timeout: float = 10.0) -> None:
     deadline = time.time() + timeout
     while not predicate() and time.time() < deadline:
         QApplication.processEvents()
@@ -30,7 +32,7 @@ def wait_until(predicate, timeout=10.0):
 
 
 @pytest.fixture
-def donut_path(tmp_path):
+def donut_path(tmp_path: Path) -> str:
     path = tmp_path / "donut.png"
     img = Image.new("L", (100, 100), 255)
     d = ImageDraw.Draw(img)
@@ -41,7 +43,7 @@ def donut_path(tmp_path):
 
 
 @pytest.fixture
-def diamond_path(tmp_path):
+def diamond_path(tmp_path: Path) -> str:
     path = tmp_path / "diamond.png"
     img = Image.new("L", (150, 150), 255)
     ImageDraw.Draw(img).polygon([(75, 10), (140, 75), (75, 140), (10, 75)], fill=0)
@@ -50,7 +52,8 @@ def diamond_path(tmp_path):
 
 
 @pytest.fixture
-def window(qapp):
+def window(qapp: QApplication) -> Iterator[MainWindow]:
+    del qapp  # requested only so the QApplication exists
     win = MainWindow()
     win.show()  # needed for realistic focus behavior (e.g. keyboard pan/zoom tests)
     yield win

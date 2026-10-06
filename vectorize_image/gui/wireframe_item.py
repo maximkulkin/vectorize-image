@@ -12,11 +12,15 @@ corners, whether a control handle looks unreasonably long, etc.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPen
-from PySide6.QtWidgets import QGraphicsItem
+from collections.abc import Iterator
+from typing import override
 
-from ..svgwrite import _is_effectively_line
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
+
+from ..svgwrite import is_effectively_line
+from ..typedefs import Bezier, Contour, Shape
 
 LINE_COLOR = QColor(0, 230, 118)  # vivid green -- stands out against both dark ink and light paper
 ANCHOR_COLOR = QColor(0, 122, 255)
@@ -29,23 +33,24 @@ CONTROL_RADIUS_PX = 2.5
 
 
 class WireframeItem(QGraphicsItem):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QGraphicsItem | None = None) -> None:
         super().__init__(parent)
-        self._shapes: list = []
-        self._bounds = QRectF()
-        self.setZValue(2)  # above the original image and the filled vector overlay
-        self.setAcceptedMouseButtons(Qt.NoButton)
+        self._shapes: list[Shape] = []
+        self._bounds: QRectF = QRectF()
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
-    def set_shapes(self, shapes: list, width: float, height: float) -> None:
+    def set_shapes(self, shapes: list[Shape], width: float, height: float) -> None:
         self.prepareGeometryChange()
         self._shapes = shapes
         self._bounds = QRectF(0, 0, width, height)
         self.update()
 
+    @override
     def boundingRect(self) -> QRectF:
         return self._bounds
 
-    def paint(self, painter, option, widget=None) -> None:
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         if not self._shapes:
             return
 
@@ -58,7 +63,7 @@ class WireframeItem(QGraphicsItem):
         line_pen = QPen(LINE_COLOR, LINE_WIDTH_PX)
         line_pen.setCosmetic(True)
         painter.setPen(line_pen)
-        painter.setBrush(Qt.NoBrush)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
         for contour in self._iter_contours():
             painter.drawPath(_contour_path(contour))
 
@@ -67,9 +72,9 @@ class WireframeItem(QGraphicsItem):
         # same test svgwrite uses to decide "L" vs "C"): drawing a "control
         # point" for what's really just a straight edge adds visual noise
         # without showing anything real about the curve fit.
-        curved = [bezier for bezier in self._iter_beziers() if not _is_effectively_line(bezier)]
+        curved = [bezier for bezier in self._iter_beziers() if not is_effectively_line(bezier)]
 
-        handle_pen = QPen(HANDLE_LINE_COLOR, 1.0, Qt.DashLine)
+        handle_pen = QPen(HANDLE_LINE_COLOR, 1.0, Qt.PenStyle.DashLine)
         handle_pen.setCosmetic(True)
         painter.setPen(handle_pen)
         for bezier in curved:
@@ -77,14 +82,14 @@ class WireframeItem(QGraphicsItem):
             painter.drawLine(p0, p1)
             painter.drawLine(p3, p2)
 
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(CONTROL_COLOR)
         for bezier in curved:
             for p in (bezier[1], bezier[2]):
                 painter.drawEllipse(QPointF(float(p[0]), float(p[1])), control_radius, control_radius)
 
         painter.setBrush(ANCHOR_COLOR)
-        seen = set()
+        seen: set[tuple[float, float]] = set()
         for bezier in self._iter_beziers():
             for p in (bezier[0], bezier[3]):
                 key = (round(float(p[0]), 3), round(float(p[1]), 3))
@@ -93,16 +98,16 @@ class WireframeItem(QGraphicsItem):
                 seen.add(key)
                 painter.drawEllipse(QPointF(*key), anchor_radius, anchor_radius)
 
-    def _iter_contours(self):
+    def _iter_contours(self) -> Iterator[Contour]:
         for shape in self._shapes:
             yield from shape
 
-    def _iter_beziers(self):
+    def _iter_beziers(self) -> Iterator[Bezier]:
         for contour in self._iter_contours():
             yield from contour
 
 
-def _contour_path(contour: list) -> QPainterPath:
+def _contour_path(contour: Contour) -> QPainterPath:
     path = QPainterPath()
     p0 = contour[0][0]
     path.moveTo(float(p0[0]), float(p0[1]))

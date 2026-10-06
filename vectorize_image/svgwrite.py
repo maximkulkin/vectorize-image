@@ -7,7 +7,7 @@ import numpy as np
 Bezier = list[np.ndarray]  # [P0, P1, P2, P3]
 
 
-def _is_effectively_line(bezier: Bezier, rel_tol: float = 1e-6) -> bool:
+def is_effectively_line(bezier: Bezier, rel_tol: float = 1e-6) -> bool:
     """True if a bezier's control points are (numerically) on the P0-P3 chord.
 
     This only catches curves that are exactly straight (e.g. an untouched
@@ -45,7 +45,7 @@ def contour_to_path_d(beziers: list[Bezier], precision: int = 3) -> str:
     parts = [f"M{_fmt_point(beziers[0][0], precision)}"]
     for bezier in beziers:
         p1, p2, p3 = bezier[1], bezier[2], bezier[3]
-        if _is_effectively_line(bezier):
+        if is_effectively_line(bezier):
             parts.append(f"L{_fmt_point(p3, precision)}")
         else:
             parts.append(
@@ -80,7 +80,7 @@ def build_svg(
     w_str = _fmt(float(width), 3)
     h_str = _fmt(float(height), 3)
 
-    path_elements = []
+    path_elements: list[str] = []
     for i, contours in enumerate(shapes, start=1):
         d = shape_to_path_d(contours, precision)
         if not d:

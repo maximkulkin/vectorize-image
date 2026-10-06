@@ -12,8 +12,11 @@ def load_grayscale(path: str) -> np.ndarray:
     Handles alpha channels by compositing onto a white background, since a
     transparent pixel should be treated as "not ink" for tracing purposes.
     """
-    img = Image.open(path)
+    return to_grayscale(Image.open(path))
 
+
+def to_grayscale(img: Image.Image) -> np.ndarray:
+    """`load_grayscale` for an already-open image."""
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         img = img.convert("RGBA")
         background = Image.new("RGBA", img.size, (255, 255, 255, 255))

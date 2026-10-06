@@ -1,6 +1,8 @@
 """GUI integration tests for manual tracing mode. Headless (offscreen)."""
 
 import os
+from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -14,31 +16,32 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from conftest import wait_until  # noqa: E402
 from vectorize_image.manual_trace import closed_loop_shapes  # noqa: E402
+from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 
-def _click(window, x, y):
+def _click(window: MainWindow, x: float, y: float) -> None:
     vp = window.view.mapFromScene(float(x), float(y))
     event = QMouseEvent(
-        QEvent.MouseButtonPress, vp.toPointF(), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier
+        QEvent.Type.MouseButtonPress, vp.toPointF(), Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
     )
     window.view.mousePressEvent(event)
     QApplication.processEvents()
 
 
-def _move(window, x, y):
+def _move(window: MainWindow, x: float, y: float) -> None:
     vp = window.view.mapFromScene(float(x), float(y))
-    event = QMouseEvent(QEvent.MouseMove, vp.toPointF(), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    event = QMouseEvent(QEvent.Type.MouseMove, vp.toPointF(), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
     window.view.mouseMoveEvent(event)
     QApplication.processEvents()
 
 
-def _escape(window):
-    event = QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)
+def _escape(window: MainWindow) -> None:
+    event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
     window.view.keyPressEvent(event)
     QApplication.processEvents()
 
 
-def _trace_polygon(window, points):
+def _trace_polygon(window: MainWindow, points: Sequence[tuple[float, float]]) -> None:
     """Click each point in turn (moving the cursor there first, like a real
     user would), then close the loop back onto the first point.
 
@@ -57,10 +60,14 @@ def _trace_polygon(window, points):
     _click(window, *first_pos)
 
 
+def _as_floats(point: tuple[float, float]) -> tuple[float, float]:
+    return (float(point[0]), float(point[1]))
+
+
 DIAMOND_CORNERS = [(75, 10), (140, 75), (75, 140), (10, 75)]
 
 
-def test_switching_to_trace_tool_updates_visibility_and_settings(window, diamond_path):
+def test_switching_to_trace_tool_updates_visibility_and_settings(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -82,7 +89,7 @@ def test_switching_to_trace_tool_updates_visibility_and_settings(window, diamond
     assert len(window.manual_model._contours) == 1
 
 
-def test_switching_back_to_auto_restores_settings_and_revectorizes(window, diamond_path):
+def test_switching_back_to_auto_restores_settings_and_revectorizes(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -98,7 +105,7 @@ def test_switching_back_to_auto_restores_settings_and_revectorizes(window, diamo
     wait_until(lambda: "Vectorizing" not in window.statusBar().currentMessage())
 
 
-def test_clicking_around_a_shape_and_closing_produces_a_closed_loop(window, diamond_path):
+def test_clicking_around_a_shape_and_closing_produces_a_closed_loop(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -114,7 +121,7 @@ def test_clicking_around_a_shape_and_closing_produces_a_closed_loop(window, diam
     assert window.save_action.isEnabled()
 
 
-def test_fitted_segments_stay_close_to_the_actual_edge(window, diamond_path):
+def test_fitted_segments_stay_close_to_the_actual_edge(window: MainWindow, diamond_path: str) -> None:
     """Regression test: the raw crack-traced boundary can have a one-pixel
     rasterization 'spike' right at a sharp corner (e.g. a 45-degree vertex),
     and a segment's tangent used to be estimated from just the single point
@@ -141,7 +148,7 @@ def test_fitted_segments_stay_close_to_the_actual_edge(window, diamond_path):
             assert -10 <= point[1] <= 160
 
 
-def test_escape_then_resume_continues_the_same_chain(window, diamond_path):
+def test_escape_then_resume_continues_the_same_chain(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -166,7 +173,7 @@ def test_escape_then_resume_continues_the_same_chain(window, diamond_path):
     assert len(window.manual_model.segments) == 2
 
 
-def test_escape_right_after_starting_discards_the_orphan_point(window, diamond_path):
+def test_escape_right_after_starting_discards_the_orphan_point(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -181,7 +188,7 @@ def test_escape_right_after_starting_discards_the_orphan_point(window, diamond_p
     assert window.manual_model.nodes == {}
 
 
-def test_manually_tracing_a_hole_groups_with_its_outer_shape(window, donut_path):
+def test_manually_tracing_a_hole_groups_with_its_outer_shape(window: MainWindow, donut_path: str) -> None:
     window._load_image(donut_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -198,7 +205,7 @@ def test_manually_tracing_a_hole_groups_with_its_outer_shape(window, donut_path)
     assert len(shapes[0]) == 2
 
 
-def test_save_svg_in_manual_mode_exports_closed_loops(window, diamond_path, tmp_path, monkeypatch):
+def test_save_svg_in_manual_mode_exports_closed_loops(window: MainWindow, diamond_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -207,10 +214,10 @@ def test_save_svg_in_manual_mode_exports_closed_loops(window, diamond_path, tmp_
     _trace_polygon(window, DIAMOND_CORNERS)
 
     out_path = tmp_path / "manual.svg"
-    monkeypatch.setattr(
-        "vectorize_image.gui.main_window.QFileDialog.getSaveFileName",
-        lambda *a, **k: (str(out_path), ""),
-    )
+    def fake_save_dialog(*_args: object, **_kwargs: object) -> tuple[str, str]:
+        return (str(out_path), "")
+
+    monkeypatch.setattr("vectorize_image.gui.main_window.QFileDialog.getSaveFileName", fake_save_dialog)
     window._save_svg()
 
     content = out_path.read_text(encoding="utf-8")
@@ -218,7 +225,7 @@ def test_save_svg_in_manual_mode_exports_closed_loops(window, diamond_path, tmp_
     assert content.count("<path") == 1
 
 
-def test_save_disabled_in_manual_mode_until_a_loop_closes(window, diamond_path):
+def test_save_disabled_in_manual_mode_until_a_loop_closes(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -242,7 +249,7 @@ def test_save_disabled_in_manual_mode_until_a_loop_closes(window, diamond_path):
     assert window.save_action.isEnabled()
 
 
-def test_hovering_near_an_open_point_before_starting_highlights_it_too(window, diamond_path):
+def test_hovering_near_an_open_point_before_starting_highlights_it_too(window: MainWindow, diamond_path: str) -> None:
     """Even with no chain in progress, hovering near a dangling point should
     show it's resumable -- not just after the user has already clicked."""
     window._load_image(diamond_path)
@@ -264,7 +271,7 @@ def test_hovering_near_an_open_point_before_starting_highlights_it_too(window, d
     assert window.manual_trace_item._preview_bezier is None  # nothing to draw a curve toward yet
 
 
-def test_hovering_near_an_open_point_sets_the_snap_highlight(window, diamond_path):
+def test_hovering_near_an_open_point_sets_the_snap_highlight(window: MainWindow, diamond_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -283,7 +290,7 @@ def test_hovering_near_an_open_point_sets_the_snap_highlight(window, diamond_pat
     assert window.manual_trace_item._preview_snap_target == first_node
 
 
-def test_loading_a_new_image_clears_manual_trace(window, diamond_path, donut_path):
+def test_loading_a_new_image_clears_manual_trace(window: MainWindow, diamond_path: str, donut_path: str) -> None:
     window._load_image(diamond_path)
     window._run_vectorize()
     wait_until(lambda: window.last_svg is not None)
@@ -298,7 +305,7 @@ def test_loading_a_new_image_clears_manual_trace(window, diamond_path, donut_pat
     wait_until(lambda: len(window.manual_model._contours) == 2)  # donut: ring + hole
 
 
-def test_hover_preview_updates_on_plain_mouse_movement_with_no_button_held(window, diamond_path):
+def test_hover_preview_updates_on_plain_mouse_movement_with_no_button_held(window: MainWindow, diamond_path: str) -> None:
     """Regression test: Qt only sends mouseMoveEvent while a button is held
     (i.e. during a drag) unless mouse tracking is enabled on the view -- so
     the live preview silently never updated between clicks in the real app,
@@ -318,12 +325,12 @@ def test_hover_preview_updates_on_plain_mouse_movement_with_no_button_held(windo
     assert window.view.viewport().hasMouseTracking()
 
     viewport = window.view.viewport()
-    start_vp = window.view.mapFromScene(*map(float, DIAMOND_CORNERS[0]))
-    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, start_vp)
+    start_vp = window.view.mapFromScene(*_as_floats(DIAMOND_CORNERS[0]))
+    QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start_vp)
     QApplication.processEvents()
     assert window.manual_model.active_node is not None
 
-    target_vp = window.view.mapFromScene(*map(float, DIAMOND_CORNERS[1]))
+    target_vp = window.view.mapFromScene(*_as_floats(DIAMOND_CORNERS[1]))
     QTest.mouseMove(viewport, target_vp)  # no button held, unlike a drag
     QApplication.processEvents()
 
