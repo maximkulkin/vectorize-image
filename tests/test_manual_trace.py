@@ -1,13 +1,15 @@
 import numpy as np
 import pytest
+from psygnal import SignalInstance
 
 from vectorize_image import manual_trace
 from vectorize_image.manual_trace import ManualTraceModel, closed_loop_shapes
+from vectorize_image.typedefs import Contour
 
 
-def _square_contour(cx, cy, half, n_per_side=10):
+def _square_contour(cx: float, cy: float, half: float, n_per_side: int = 10) -> np.ndarray:
     """A densely-sampled square ring, standing in for a traced edge."""
-    pts = []
+    pts: list[tuple[float, float]] = []
     corners = [(-half, -half), (half, -half), (half, half), (-half, half)]
     for (x0, y0), (x1, y1) in zip(corners, corners[1:] + corners[:1]):
         for t in np.linspace(0, 1, n_per_side, endpoint=False):
@@ -15,7 +17,7 @@ def _square_contour(cx, cy, half, n_per_side=10):
     return np.array(pts, dtype=float)
 
 
-def test_begin_or_resume_snaps_to_nearest_edge_point():
+def test_begin_or_resume_snaps_to_nearest_edge_point() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
 
@@ -26,13 +28,13 @@ def test_begin_or_resume_snaps_to_nearest_edge_point():
     assert model.active_node == node
 
 
-def test_begin_or_resume_without_any_edge_source_uses_raw_position():
+def test_begin_or_resume_without_any_edge_source_uses_raw_position() -> None:
     model = ManualTraceModel()
     node = model.begin_or_resume((5.0, 7.0), snap_radius=1.0)
     assert np.allclose(model.nodes[node], [5.0, 7.0])
 
 
-def test_commit_builds_a_segment_and_advances_active_node():
+def test_commit_builds_a_segment_and_advances_active_node() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     start = model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -48,11 +50,11 @@ def test_commit_builds_a_segment_and_advances_active_node():
     # the fitted segment should follow the edge, staying close to the square
     bezier = seg.bezier
     for t in np.linspace(0, 1, 20):
-        p = manual_trace.curve_fit._q(bezier, t)
+        p = manual_trace.curve_fit.bezier_point(bezier, t)
         assert abs(max(abs(p[0]), abs(p[1])) - 10.0) < 1.5
 
 
-def test_commit_is_a_noop_for_a_degenerate_zero_length_segment():
+def test_commit_is_a_noop_for_a_degenerate_zero_length_segment() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     start = model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -62,7 +64,7 @@ def test_commit_is_a_noop_for_a_degenerate_zero_length_segment():
     assert model.active_node == start
 
 
-def test_escape_clears_active_node_and_discards_unattached_point():
+def test_escape_clears_active_node_and_discards_unattached_point() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     node = model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -74,12 +76,13 @@ def test_escape_clears_active_node_and_discards_unattached_point():
     assert node not in model.nodes  # never got a segment, so it's discarded
 
 
-def test_escape_keeps_a_dangling_point_that_has_a_segment():
+def test_escape_keeps_a_dangling_point_that_has_a_segment() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
     model.commit((10, 0), snap_radius=1.0)
     dangling_node = model.active_node
+    assert dangling_node is not None
 
     model.cancel()
 
@@ -88,12 +91,13 @@ def test_escape_keeps_a_dangling_point_that_has_a_segment():
     assert model.degree(dangling_node) == 1
 
 
-def test_clicking_near_a_dangling_point_resumes_it_instead_of_creating_new():
+def test_clicking_near_a_dangling_point_resumes_it_instead_of_creating_new() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
     model.commit((10, 0), snap_radius=1.0)
     dangling_node = model.active_node
+    assert dangling_node is not None
     model.cancel()
     assert len(model.nodes) == 2
 
@@ -103,7 +107,7 @@ def test_clicking_near_a_dangling_point_resumes_it_instead_of_creating_new():
     assert len(model.nodes) == 2  # no new node created
 
 
-def test_closing_a_loop_by_clicking_near_the_starting_point():
+def test_closing_a_loop_by_clicking_near_the_starting_point() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
 
@@ -127,7 +131,7 @@ def test_closing_a_loop_by_clicking_near_the_starting_point():
         assert np.allclose(loop[i][3], loop[(i + 1) % 4][0])
 
 
-def test_open_chain_is_not_a_closed_loop():
+def test_open_chain_is_not_a_closed_loop() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -140,19 +144,21 @@ def test_open_chain_is_not_a_closed_loop():
     assert len(chains[0]) == 2
 
 
-def test_joining_two_separate_chains_at_their_dangling_ends():
+def test_joining_two_separate_chains_at_their_dangling_ends() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
 
     model.begin_or_resume((0, -10), snap_radius=1.0)
     model.commit((10, 0), snap_radius=1.0)
     chain_a_end = model.active_node
+    assert chain_a_end is not None
     model.cancel()
     assert model.active_node is None
 
     model.begin_or_resume((-10, 0), snap_radius=1.0)
     model.commit((0, 10), snap_radius=1.0)
     chain_b_end = model.active_node
+    assert chain_b_end is not None
     model.cancel()
 
     # now connect the two chains' free ends into one
@@ -166,13 +172,13 @@ def test_joining_two_separate_chains_at_their_dangling_ends():
     assert len(chains[0]) == 3
 
 
-def test_a_shape_and_a_manually_drawn_hole_group_together():
+def test_a_shape_and_a_manually_drawn_hole_group_together() -> None:
     model = ManualTraceModel()
     outer = _square_contour(0, 0, 20)
     hole = _square_contour(0, 0, 8)
     model.set_edge_source([outer, hole])
 
-    def trace_square(pts):
+    def trace_square(pts: list[tuple[float, float]]) -> None:
         model.begin_or_resume(pts[0], snap_radius=1.0)
         for p in pts[1:]:
             model.commit(p, snap_radius=1.0)
@@ -189,7 +195,7 @@ def test_a_shape_and_a_manually_drawn_hole_group_together():
     assert len(shapes[0]) == 2
 
 
-def test_closed_loop_shapes_keeps_unrelated_loops_separate():
+def test_closed_loop_shapes_keeps_unrelated_loops_separate() -> None:
     model = ManualTraceModel()
     a = _square_contour(0, 0, 5)
     b = _square_contour(100, 0, 5)
@@ -213,14 +219,14 @@ def test_closed_loop_shapes_keeps_unrelated_loops_separate():
     assert len(shapes) == 2
 
 
-def test_closed_loop_shapes_of_no_loops_is_empty():
+def test_closed_loop_shapes_of_no_loops_is_empty() -> None:
     assert closed_loop_shapes([]) == []
 
 
 # --------------------------------------------------------------- undo/redo
 
 
-def test_creating_a_point_is_undoable():
+def test_creating_a_point_is_undoable() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
 
@@ -239,12 +245,13 @@ def test_creating_a_point_is_undoable():
     assert model.active_node == node
 
 
-def test_resuming_an_existing_point_does_not_push_undo():
+def test_resuming_an_existing_point_does_not_push_undo() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
     model.commit((10, 0), snap_radius=1.0)
     dangling_node = model.active_node
+    assert dangling_node is not None
     model.cancel()
     depth_before = len(model._undo_stack)
 
@@ -253,7 +260,7 @@ def test_resuming_an_existing_point_does_not_push_undo():
     assert len(model._undo_stack) == depth_before
 
 
-def test_committing_a_segment_is_undoable():
+def test_committing_a_segment_is_undoable() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -269,7 +276,7 @@ def test_committing_a_segment_is_undoable():
     assert len(model.segments) == 1
 
 
-def test_a_noop_commit_does_not_push_undo():
+def test_a_noop_commit_does_not_push_undo() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -280,7 +287,7 @@ def test_a_noop_commit_does_not_push_undo():
     assert len(model._undo_stack) == depth_before
 
 
-def test_cancel_deleting_an_orphan_is_undoable():
+def test_cancel_deleting_an_orphan_is_undoable() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -292,7 +299,7 @@ def test_cancel_deleting_an_orphan_is_undoable():
     assert len(model.nodes) == 1
 
 
-def test_cancel_with_nothing_to_delete_does_not_push_undo():
+def test_cancel_with_nothing_to_delete_does_not_push_undo() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -304,7 +311,7 @@ def test_cancel_with_nothing_to_delete_does_not_push_undo():
     assert len(model._undo_stack) == depth_before
 
 
-def test_clear_is_undoable():
+def test_clear_is_undoable() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -319,7 +326,7 @@ def test_clear_is_undoable():
     assert len(model.segments) == 1
 
 
-def test_clear_on_an_already_empty_model_does_not_push_undo():
+def test_clear_on_an_already_empty_model_does_not_push_undo() -> None:
     model = ManualTraceModel()
     depth_before = len(model._undo_stack)
 
@@ -328,7 +335,7 @@ def test_clear_on_an_already_empty_model_does_not_push_undo():
     assert len(model._undo_stack) == depth_before
 
 
-def test_a_new_edit_clears_the_redo_stack():
+def test_a_new_edit_clears_the_redo_stack() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -341,7 +348,7 @@ def test_a_new_edit_clears_the_redo_stack():
     assert not model.can_redo()
 
 
-def test_load_shapes_resets_undo_history():
+def test_load_shapes_resets_undo_history() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -358,7 +365,7 @@ def test_load_shapes_resets_undo_history():
 # ------------------------------------------------------------ edit handles
 
 
-def _traced_square(snap_radius=1.0):
+def _traced_square(snap_radius: float = 1.0) -> ManualTraceModel:
     model = ManualTraceModel()
     contour = _square_contour(0, 0, 10)
     model.set_edge_source([contour])
@@ -371,7 +378,7 @@ def _traced_square(snap_radius=1.0):
     return model
 
 
-def test_find_handle_near_finds_an_anchor():
+def test_find_handle_near_finds_an_anchor() -> None:
     model = _traced_square()
     node_id, node_pos = next(iter(model.nodes.items()))
 
@@ -380,7 +387,7 @@ def test_find_handle_near_finds_an_anchor():
     assert handle == ("anchor", node_id)
 
 
-def test_find_handle_near_finds_a_control_point():
+def test_find_handle_near_finds_a_control_point() -> None:
     model = _traced_square()
     control_pos = model.segments[0].bezier[1]
 
@@ -389,12 +396,12 @@ def test_find_handle_near_finds_a_control_point():
     assert handle == ("control", 0, 1)
 
 
-def test_find_handle_near_returns_none_when_nothing_is_close():
+def test_find_handle_near_returns_none_when_nothing_is_close() -> None:
     model = _traced_square()
     assert model.find_handle_near((1000, 1000), max_dist=5.0) is None
 
 
-def test_moving_an_anchor_translates_the_near_control_points_only():
+def test_moving_an_anchor_translates_the_near_control_points_only() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     touching = [s for s in model.segments if s.start == node_id or s.end == node_id]
@@ -417,7 +424,7 @@ def test_moving_an_anchor_translates_the_near_control_points_only():
     assert np.allclose(seg_b.bezier[2] if seg_b.start == node_id else seg_b.bezier[1], far_control_b)
 
 
-def test_moving_a_control_point_only_affects_its_own_segment():
+def test_moving_a_control_point_only_affects_its_own_segment() -> None:
     model = _traced_square()
     other_segments_before = [[p.copy() for p in s.bezier] for s in model.segments[1:]]
 
@@ -428,7 +435,7 @@ def test_moving_a_control_point_only_affects_its_own_segment():
         assert all(np.allclose(p, b) for p, b in zip(seg.bezier, before))
 
 
-def test_checkpoint_collapses_a_whole_drag_into_one_undo_step():
+def test_checkpoint_collapses_a_whole_drag_into_one_undo_step() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     original_pos = model.nodes[node_id].copy()
@@ -444,7 +451,7 @@ def test_checkpoint_collapses_a_whole_drag_into_one_undo_step():
     assert np.allclose(model.nodes[node_id], original_pos)
 
 
-def test_cancel_checkpoint_reverts_without_touching_redo_stack():
+def test_cancel_checkpoint_reverts_without_touching_redo_stack() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     original_pos = model.nodes[node_id].copy()
@@ -460,7 +467,7 @@ def test_cancel_checkpoint_reverts_without_touching_redo_stack():
 # ------------------------------------------------------------- load_shapes
 
 
-def test_load_shapes_builds_a_closed_loop_matching_the_input():
+def test_load_shapes_builds_a_closed_loop_matching_the_input() -> None:
     p0, p1, p2, p3 = (
         np.array([0.0, 0.0]),
         np.array([1.0, 0.0]),
@@ -486,9 +493,9 @@ def test_load_shapes_builds_a_closed_loop_matching_the_input():
         assert model.degree(node) == 2
 
 
-def test_load_shapes_of_a_shape_with_a_hole_preserves_both_loops():
-    def contour_from_corners(corners):
-        beziers = []
+def test_load_shapes_of_a_shape_with_a_hole_preserves_both_loops() -> None:
+    def contour_from_corners(corners: list[tuple[float, float]]) -> Contour:
+        beziers: Contour = []
         for a, b in zip(corners, corners[1:] + corners[:1]):
             a, b = np.array(a, dtype=float), np.array(b, dtype=float)
             beziers.append([a, a, b, b])
@@ -510,7 +517,7 @@ def test_load_shapes_of_a_shape_with_a_hole_preserves_both_loops():
 # -------------------------------------------------------------- selection
 
 
-def test_connected_component_of_a_closed_square():
+def test_connected_component_of_a_closed_square() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
 
@@ -520,7 +527,7 @@ def test_connected_component_of_a_closed_square():
     assert segments == set(range(len(model.segments)))
 
 
-def test_connected_component_of_an_open_chain_excludes_other_chains():
+def test_connected_component_of_an_open_chain_excludes_other_chains() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -536,20 +543,20 @@ def test_connected_component_of_an_open_chain_excludes_other_chains():
     assert len(segments) == 1
 
 
-def test_connected_component_of_a_missing_node_is_empty():
+def test_connected_component_of_a_missing_node_is_empty() -> None:
     model = _traced_square()
     assert model.connected_component(99999) == (set(), set())
 
 
-def test_find_segment_near_hits_the_right_curve():
+def test_find_segment_near_hits_the_right_curve() -> None:
     model = _traced_square()
-    mid = manual_trace.curve_fit._q(model.segments[2].bezier, 0.5)
+    mid = manual_trace.curve_fit.bezier_point(model.segments[2].bezier, 0.5)
 
     assert model.find_segment_near(mid, max_dist=1.0) == 2
     assert model.find_segment_near((1000, 1000), max_dist=5.0) is None
 
 
-def test_resolve_selection_points_mode_separates_standalone_controls():
+def test_resolve_selection_points_mode_separates_standalone_controls() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     touching = [i for i, s in enumerate(model.segments) if s.start == node_id or s.end == node_id]
@@ -566,7 +573,7 @@ def test_resolve_selection_points_mode_separates_standalone_controls():
     assert segs == set()
 
 
-def test_resolve_selection_curves_mode_includes_endpoints():
+def test_resolve_selection_curves_mode_includes_endpoints() -> None:
     model = _traced_square()
     seg = model.segments[0]
 
@@ -577,7 +584,7 @@ def test_resolve_selection_curves_mode_includes_endpoints():
     assert segs == {0}
 
 
-def test_resolve_selection_contours_mode_expands_to_whole_component():
+def test_resolve_selection_contours_mode_expands_to_whole_component() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
 
@@ -588,7 +595,7 @@ def test_resolve_selection_contours_mode_expands_to_whole_component():
     assert segs == set(range(len(model.segments)))
 
 
-def test_same_selection_entry_matches_any_point_on_the_same_contour():
+def test_same_selection_entry_matches_any_point_on_the_same_contour() -> None:
     model = _traced_square()
     nodes = list(model.nodes)
 
@@ -602,7 +609,7 @@ def test_same_selection_entry_matches_any_point_on_the_same_contour():
 # --------------------------------------------------------------- group move
 
 
-def test_begin_move_and_apply_move_translate_a_points_selection():
+def test_begin_move_and_apply_move_translate_a_points_selection() -> None:
     model = _traced_square()
     nodes = list(model.nodes)
     a, b = nodes[0], nodes[1]
@@ -619,7 +626,7 @@ def test_begin_move_and_apply_move_translate_a_points_selection():
     assert np.allclose(model.nodes[a], originals[a] + [1.0, 1.0])
 
 
-def test_moving_a_points_selection_does_not_double_move_implied_controls():
+def test_moving_a_points_selection_does_not_double_move_implied_controls() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     touching = [i for i, s in enumerate(model.segments) if s.start == node_id or s.end == node_id]
@@ -639,7 +646,7 @@ def test_moving_a_points_selection_does_not_double_move_implied_controls():
     assert np.allclose(seg.bezier[which], original_control + [10.0, 0.0])
 
 
-def test_moving_a_curve_selection_keeps_the_path_connected():
+def test_moving_a_curve_selection_keeps_the_path_connected() -> None:
     model = _traced_square()
     seg_idx = 0
     seg = model.segments[seg_idx]
@@ -658,7 +665,7 @@ def test_moving_a_curve_selection_keeps_the_path_connected():
     assert np.allclose(endpoint_on_neighbor, shared_pos)
 
 
-def test_moving_a_contour_selection_translates_it_rigidly():
+def test_moving_a_contour_selection_translates_it_rigidly() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     original_nodes = {n: p.copy() for n, p in model.nodes.items()}
@@ -674,7 +681,7 @@ def test_moving_a_contour_selection_translates_it_rigidly():
             assert np.allclose(p, orig_p + [4.0, -6.0])
 
 
-def test_apply_move_with_empty_selection_is_a_noop():
+def test_apply_move_with_empty_selection_is_a_noop() -> None:
     model = _traced_square()
     before = {n: p.copy() for n, p in model.nodes.items()}
     model.begin_move("points", set())
@@ -686,7 +693,7 @@ def test_apply_move_with_empty_selection_is_a_noop():
 # ------------------------------------------------------------------ delete
 
 
-def test_delete_points_selection_removes_anchor_and_incident_segments():
+def test_delete_points_selection_removes_anchor_and_incident_segments() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     incident = sum(1 for s in model.segments if s.start == node_id or s.end == node_id)
@@ -699,13 +706,13 @@ def test_delete_points_selection_removes_anchor_and_incident_segments():
     assert model.closed_loops() == []  # square is no longer closed
 
 
-def test_delete_points_selection_ignores_standalone_control_handles():
+def test_delete_points_selection_ignores_standalone_control_handles() -> None:
     model = _traced_square()
     assert model.delete_selection("points", {("control", 0, 1)}) is False
     assert len(model.nodes) == 4  # nothing removed
 
 
-def test_delete_curves_selection_removes_segment_but_keeps_endpoints():
+def test_delete_curves_selection_removes_segment_but_keeps_endpoints() -> None:
     model = _traced_square()
     seg = model.segments[0]
 
@@ -718,7 +725,7 @@ def test_delete_curves_selection_removes_segment_but_keeps_endpoints():
     assert model.degree(seg.end) == 1
 
 
-def test_delete_contours_selection_removes_everything_in_the_component():
+def test_delete_contours_selection_removes_everything_in_the_component() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
 
@@ -728,7 +735,7 @@ def test_delete_contours_selection_removes_everything_in_the_component():
     assert model.segments == []
 
 
-def test_delete_selection_is_undoable():
+def test_delete_selection_is_undoable() -> None:
     model = _traced_square()
     node_id = next(iter(model.nodes))
     nodes_before = dict(model.nodes)
@@ -741,7 +748,7 @@ def test_delete_selection_is_undoable():
     assert len(model.segments) == segments_before
 
 
-def test_delete_selection_with_nothing_deletable_does_not_push_undo():
+def test_delete_selection_with_nothing_deletable_does_not_push_undo() -> None:
     model = _traced_square()
     depth_before = len(model._undo_stack)
 
@@ -752,7 +759,7 @@ def test_delete_selection_with_nothing_deletable_does_not_push_undo():
     assert len(model._undo_stack) == depth_before
 
 
-def test_delete_active_node_clears_it():
+def test_delete_active_node_clears_it() -> None:
     model = ManualTraceModel()
     model.set_edge_source([_square_contour(0, 0, 10)])
     model.begin_or_resume((0, -10), snap_radius=1.0)
@@ -766,36 +773,36 @@ def test_delete_active_node_clears_it():
 # --------------------------------------------------- box & paint selection
 
 
-def _node_near(model, pos, atol=1.5):
+def _node_near(model: ManualTraceModel, pos: tuple[float, float], atol: float = 1.5) -> int:
     return next(nid for nid, p in model.nodes.items() if np.allclose(p, pos, atol=atol))
 
 
-def test_items_in_box_points_mode_matches_only_anchors_inside():
+def test_items_in_box_points_mode_matches_only_anchors_inside() -> None:
     model = _traced_square()
     node_id = _node_near(model, (0, -10))
 
     hits = model.items_in_box("points", (-3, -13), (3, -7))
 
-    anchors = {item for item in hits if item[0] == "anchor"}
+    anchors = {item for item in hits if isinstance(item, tuple) and item[0] == "anchor"}
     assert anchors == {("anchor", node_id)}
 
 
-def test_items_in_box_with_no_overlap_returns_empty():
+def test_items_in_box_with_no_overlap_returns_empty() -> None:
     model = _traced_square()
     assert model.items_in_box("points", (1000, 1000), (1001, 1001)) == set()
 
 
-def test_items_in_box_corners_can_be_given_in_either_order():
+def test_items_in_box_corners_can_be_given_in_either_order() -> None:
     model = _traced_square()
     node_id = _node_near(model, (0, -10))
 
     hits = model.items_in_box("points", (3, -7), (-3, -13))  # swapped corners
 
-    anchors = {item for item in hits if item[0] == "anchor"}
+    anchors = {item for item in hits if isinstance(item, tuple) and item[0] == "anchor"}
     assert anchors == {("anchor", node_id)}
 
 
-def test_items_in_box_curves_mode_matches_a_segment_that_only_partly_crosses_it():
+def test_items_in_box_curves_mode_matches_a_segment_that_only_partly_crosses_it() -> None:
     """A box straddling part of a curve, containing neither endpoint, still
     counts -- selection doesn't require the curve to fit entirely. Segment 0
     bows out toward (10, -10) between its (0, -10) and (10, 0) endpoints
@@ -809,56 +816,131 @@ def test_items_in_box_curves_mode_matches_a_segment_that_only_partly_crosses_it(
     assert 0 in hits
 
 
-def test_items_in_box_contours_mode_selects_the_whole_component():
+def test_items_in_box_contours_mode_selects_the_whole_component() -> None:
     model = _traced_square()
 
     hits = model.items_in_box("contours", (-3, -13), (3, -7))
 
     assert len(hits) == 1
-    nodes, segments = model.connected_component(next(iter(hits)))
+    rep = next(iter(hits))
+    assert isinstance(rep, int)
+    nodes, segments = model.connected_component(rep)
     assert nodes == set(model.nodes)
     assert segments == set(range(len(model.segments)))
 
 
-def test_items_in_box_unknown_mode_returns_empty():
+def test_items_in_box_rejects_an_unknown_mode() -> None:
     model = _traced_square()
-    assert model.items_in_box("bogus", (-100, -100), (100, 100)) == set()
+    with pytest.raises(AssertionError):
+        model.items_in_box("bogus", (-100, -100), (100, 100))  # pyright: ignore[reportArgumentType]
 
 
-def test_items_in_circle_points_mode_matches_only_the_anchor_within_radius():
+def test_items_in_circle_points_mode_matches_only_the_anchor_within_radius() -> None:
     model = _traced_square()
     node_id = _node_near(model, (0, -10))
 
     hits = model.items_in_circle("points", (0, -10), radius=3.0)
 
-    anchors = {item for item in hits if item[0] == "anchor"}
+    anchors = {item for item in hits if isinstance(item, tuple) and item[0] == "anchor"}
     assert anchors == {("anchor", node_id)}
 
 
-def test_items_in_circle_with_no_overlap_returns_empty():
+def test_items_in_circle_with_no_overlap_returns_empty() -> None:
     model = _traced_square()
     assert model.items_in_circle("points", (1000, 1000), radius=1.0) == set()
 
 
-def test_items_in_circle_curves_mode_matches_a_segment_that_only_partly_crosses_it():
+def test_items_in_circle_curves_mode_matches_a_segment_that_only_partly_crosses_it() -> None:
     model = _traced_square()
     hits = model.items_in_circle("curves", (9, -8), radius=1.5)
     assert 0 in hits
 
 
-def test_items_in_circle_contours_mode_selects_the_whole_component():
+def test_items_in_circle_contours_mode_selects_the_whole_component() -> None:
     model = _traced_square()
 
     hits = model.items_in_circle("contours", (0, -10), radius=3.0)
 
     assert len(hits) == 1
-    nodes, segments = model.connected_component(next(iter(hits)))
+    rep = next(iter(hits))
+    assert isinstance(rep, int)
+    nodes, segments = model.connected_component(rep)
     assert nodes == set(model.nodes)
     assert segments == set(range(len(model.segments)))
 
 
-def test_items_in_circle_unknown_mode_returns_empty():
+def test_items_in_circle_rejects_an_unknown_mode() -> None:
     model = _traced_square()
-    assert model.items_in_circle("bogus", (0, 0), radius=100.0) == set()
+    with pytest.raises(AssertionError):
+        model.items_in_circle("bogus", (0, 0), radius=100.0)  # pyright: ignore[reportArgumentType]
 
     assert model.active_node is None
+
+
+# --------------------------------------------------------------- signals
+
+
+class _Counter:
+    def __init__(self, signal: SignalInstance) -> None:
+        self.count: int = 0
+        signal.connect(self._on_emit)
+
+    def _on_emit(self) -> None:
+        self.count += 1
+
+
+def test_every_kind_of_edit_emits_changed_once() -> None:
+    model = _traced_square()
+    node_id = next(iter(model.nodes))
+    changed = _Counter(model.changed)
+
+    model.checkpoint()
+    model.move_handle(("anchor", node_id), (1.0, -12.0))
+    model.begin_move("points", {("anchor", node_id)})  # just snapshots positions; no change yet
+    model.apply_move((1.0, 1.0))
+    model.undo()
+    model.redo()
+    model.delete_selection("points", {("anchor", node_id)})
+    model.clear()
+    model.reset()
+
+    assert changed.count == 8
+
+
+def test_tracing_emits_changed_for_each_step_including_resume_and_cancel() -> None:
+    model = ManualTraceModel()
+    model.set_edge_source([_square_contour(0, 0, 10)])
+    changed = _Counter(model.changed)
+
+    model.begin_or_resume((0, -10), snap_radius=1.0)
+    model.commit((10, 0), snap_radius=1.0)
+    model.cancel()
+    model.begin_or_resume(model.nodes[model.segments[0].end], snap_radius=1.0)  # resume: cursor-only change
+
+    assert changed.count == 4
+
+
+def test_noops_and_queries_do_not_emit_changed() -> None:
+    model = _traced_square()
+    model.set_edge_source([_square_contour(0, 0, 10)])
+    changed = _Counter(model.changed)
+
+    model.cancel()  # nothing active
+    model.redo()  # nothing to redo
+    model.delete_selection("points", set())
+    model.begin_move("points", set())
+    model.preview((3.0, 3.0), snap_radius=1.0)
+    model.closed_loops()
+    model.find_handle_near((0.0, 0.0), 1.0)
+
+    assert changed.count == 0
+
+
+def test_load_shapes_emits_changed_once() -> None:
+    a, b, c = np.array([0.0, 0.0]), np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    model = ManualTraceModel()
+    changed = _Counter(model.changed)
+
+    model.load_shapes([[[[a, a, b, b], [b, b, c, c], [c, c, a, a]]]])
+
+    assert changed.count == 1

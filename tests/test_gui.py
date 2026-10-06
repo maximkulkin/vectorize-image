@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 from PIL import Image, ImageDraw  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent, QWheelEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGraphicsView  # noqa: E402
 
 from conftest import wait_until  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
@@ -24,41 +24,42 @@ def test_loading_an_image_does_not_trigger_vectorization(window: MainWindow, don
     sessions go straight to Manual Trace/Edit without ever needing it -- so
     opening an image should leave last_svg alone until a setting changes or
     the Automatic tool is (re-)selected."""
-    assert window.last_svg is None
-    window._load_image(donut_path)
+    assert window.document.auto_svg is None
+    window.load_image(donut_path)
     QApplication.processEvents()
     time.sleep(0.2)
     QApplication.processEvents()
-    assert window.last_svg is None
-    assert window.vector_item.pixmap().isNull()
+    assert window.document.auto_svg is None
+    assert window.canvas.vector_item.pixmap().isNull()
     assert not window.save_action.isEnabled()
 
 
 def test_changing_a_setting_after_load_triggers_vectorization(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
-    assert window.last_svg is None
+    window.load_image(donut_path)
+    assert window.document.auto_svg is None
 
     window.invert_checkbox.setChecked(True)
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
-    assert "<path" in window.last_svg
-    assert not window.vector_item.pixmap().isNull()
+    svg = window.document.auto_svg
+    assert svg is not None and "<path" in svg
+    assert not window.canvas.vector_item.pixmap().isNull()
     assert window.save_action.isEnabled()
 
 
 def test_reselecting_the_automatic_tool_triggers_vectorization(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window.trace_tool_action.setChecked(True)
-    assert window.last_svg is None
+    assert window.document.auto_svg is None
 
     window.auto_tool_action.setChecked(True)
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
 
 def test_rapid_parameter_changes_coalesce_into_one_run(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     gen_before = window._generation
 
     window.max_error_row.spin.setValue(0.4)
@@ -73,13 +74,13 @@ def test_rapid_parameter_changes_coalesce_into_one_run(window: MainWindow, donut
 
 
 def test_opacity_slider_does_not_trigger_revectorization(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     gen_before = window._generation
 
     window.opacity_slider.setValue(80)
-    assert window.vector_item.opacity() == pytest.approx(0.8)
+    assert window.canvas.vector_item.opacity() == pytest.approx(0.8)
 
     time.sleep(0.3)
     QApplication.processEvents()
@@ -87,9 +88,9 @@ def test_opacity_slider_does_not_trigger_revectorization(window: MainWindow, don
 
 
 def test_manual_threshold_overrides_auto(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
     window.auto_threshold_checkbox.setChecked(False)
     assert window.threshold_row.slider.isEnabled()
@@ -100,9 +101,9 @@ def test_manual_threshold_overrides_auto(window: MainWindow, donut_path: str) ->
 
 
 def test_auto_threshold_reflects_computed_value(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     assert window.threshold_row.value() == pytest.approx(128.0, abs=1.0)
     assert not window.threshold_row.slider.isEnabled()
 
@@ -113,22 +114,24 @@ def test_invert_produces_a_topologically_correct_result(window: MainWindow, donu
     interacting correctly with inverted bitmaps (see the manual debugging
     session that first surfaced this as a suspiciously-flat-looking result).
     """
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
     gen_before = window._generation
     window.invert_checkbox.setChecked(True)
     wait_until(lambda: window._generation > gen_before and "Vectorizing" not in window.statusBar().currentMessage())
 
-    assert window.last_svg.count("<path") == 1
-    assert "M0,0" in window.last_svg  # the giant background rectangle's corner
+    svg = window.document.auto_svg
+    assert svg is not None
+    assert svg.count("<path") == 1
+    assert "M0,0" in svg  # the giant background rectangle's corner
 
 
 def test_save_svg_writes_last_generated_content(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
     out_path = tmp_path / "out.svg"
     def fake_save_dialog(*_args: object, **_kwargs: object) -> tuple[str, str]:
@@ -137,13 +140,13 @@ def test_save_svg_writes_last_generated_content(window: MainWindow, donut_path: 
     monkeypatch.setattr("vectorize_image.gui.main_window.QFileDialog.getSaveFileName", fake_save_dialog)
     window._save_svg()
 
-    assert out_path.read_text(encoding="utf-8") == window.last_svg
+    assert out_path.read_text(encoding="utf-8") == window.document.auto_svg
 
 
 def test_loading_a_new_image_clears_the_overlay_immediately(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
     square_path = tmp_path / "square.png"
     img = Image.new("L", (50, 50), 255)
@@ -151,11 +154,11 @@ def test_loading_a_new_image_clears_the_overlay_immediately(window: MainWindow, 
     img.save(square_path)
 
     gen_before = window._generation
-    window._load_image(str(square_path))
-    assert window.vector_item.pixmap().isNull()
+    window.load_image(str(square_path))
+    assert window.canvas.vector_item.pixmap().isNull()
 
     window._run_vectorize()
-    wait_until(lambda: window._generation > gen_before and window.last_svg is not None)
+    wait_until(lambda: window._generation > gen_before and window.document.auto_svg is not None)
 
 
 # --------------------------------------------------------- pan & zoom
@@ -186,8 +189,8 @@ def test_wheel_zoom_anchors_on_the_cursor_point(window: MainWindow, donut_path: 
     wheel-zoom -- a few pixels of drift is inherent to QGraphicsView's
     integer scrollbars, but it must not be a large, visible jump.
     """
-    window._load_image(donut_path)
-    view = window.view
+    window.load_image(donut_path)
+    view = window.canvas
 
     # Establish real scrollable range first: right after fit-to-window the
     # content barely exceeds the viewport, leaving no room to pan, which
@@ -204,8 +207,8 @@ def test_wheel_zoom_anchors_on_the_cursor_point(window: MainWindow, donut_path: 
 
 
 def test_keyboard_zoom_anchors_on_the_view_center(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
-    view = window.view
+    window.load_image(donut_path)
+    view = window.canvas
 
     for _ in range(6):
         view.zoom_in()
@@ -224,8 +227,8 @@ def test_keyboard_zoom_anchors_on_the_view_center(window: MainWindow, donut_path
 
 
 def test_zoom_clamps_to_min_and_max_scale(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
-    view = window.view
+    window.load_image(donut_path)
+    view = window.canvas
 
     for _ in range(60):
         view.zoom_in()
@@ -237,8 +240,8 @@ def test_zoom_clamps_to_min_and_max_scale(window: MainWindow, donut_path: str) -
 
 
 def test_arrow_keys_pan_the_view(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
-    view = window.view
+    window.load_image(donut_path)
+    view = window.canvas
 
     for _ in range(6):  # need real scrollable range for panning to move anything
         view.zoom_in()
@@ -264,75 +267,75 @@ def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_
     """Keyboard pan/zoom needs the view to actually have focus; otherwise
     arrow/+/- key presses go nowhere until the user thinks to click the canvas.
     """
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     QApplication.processEvents()
-    assert window.view.hasFocus()
+    assert window.canvas.hasFocus()
 
 
 # ------------------------------------------------------- lines & points
 
 
 def test_wireframe_hidden_by_default(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     assert window.wireframe_checkbox.isChecked() is False
-    assert not window.wireframe_item.isVisible()
+    assert not window.canvas.wireframe_item.isVisible()
 
 
 def test_wireframe_toggle_shows_it_without_revectorizing(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     gen_before = window._generation
 
     window.wireframe_checkbox.setChecked(True)
-    assert window.wireframe_item.isVisible()
+    assert window.canvas.wireframe_item.isVisible()
 
     QApplication.processEvents()
     assert window._generation == gen_before  # pure display toggle, no recompute
 
     window.wireframe_checkbox.setChecked(False)
-    assert not window.wireframe_item.isVisible()
+    assert not window.canvas.wireframe_item.isVisible()
 
 
 def test_wireframe_is_populated_from_the_vectorize_result(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
-    assert window.last_shapes  # non-empty: donut + hole + square
-    assert window.wireframe_item._shapes == window.last_shapes
-    assert window.wireframe_item.boundingRect().width() == window.image_size[0]
-    assert window.wireframe_item.boundingRect().height() == window.image_size[1]
+    assert window.document.auto_shapes  # non-empty: donut + hole + square
+    assert window.canvas.wireframe_item._shapes == window.document.auto_shapes
+    assert window.canvas.wireframe_item.boundingRect().width() == window.document.image_size[0]
+    assert window.canvas.wireframe_item.boundingRect().height() == window.document.image_size[1]
 
 
 def test_wireframe_cleared_immediately_on_new_image_load(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
     square_path = tmp_path / "square.png"
     img = Image.new("L", (50, 50), 255)
     ImageDraw.Draw(img).rectangle([5, 5, 45, 45], fill=0)
     img.save(square_path)
 
-    window._load_image(str(square_path))
-    assert window.wireframe_item._shapes == []
+    window.load_image(str(square_path))
+    assert window.canvas.wireframe_item._shapes == []
     window._run_vectorize()
-    wait_until(lambda: window.last_shapes is not None)
+    wait_until(lambda: window.document.auto_shapes is not None)
 
 
 def test_wireframe_paints_without_error_for_curved_and_straight_shapes(window: MainWindow, donut_path: str) -> None:
     """Smoke test the actual paint() path (curved segments get control-point
-    handles, straight ones don't -- see _is_effectively_line filtering)."""
+    handles, straight ones don't -- see is_effectively_line filtering)."""
     from PySide6.QtGui import QImage, QPainter
     from PySide6.QtWidgets import QStyleOptionGraphicsItem
 
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.wireframe_checkbox.setChecked(True)
 
     image = QImage(*window.document.image_size, QImage.Format.Format_ARGB32_Premultiplied)
     painter = QPainter(image)
-    window.wireframe_item.paint(painter, None, None)
+    window.canvas.wireframe_item.paint(painter, QStyleOptionGraphicsItem(), None)
     painter.end()  # must not raise

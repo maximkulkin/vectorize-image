@@ -32,7 +32,7 @@ def _normalize(v: np.ndarray) -> np.ndarray:
     return v / n if n > 1e-12 else v
 
 
-def _q(bezier: list[np.ndarray], t: float) -> np.ndarray:
+def bezier_point(bezier: list[np.ndarray], t: float) -> np.ndarray:
     """Evaluate a cubic bezier at parameter t."""
     p0, p1, p2, p3 = bezier
     mt = 1.0 - t
@@ -96,7 +96,7 @@ def _generate_bezier(
         c[1, 0] = c[0, 1]
         c[1, 1] += np.dot(a[i, 1], a[i, 1])
 
-        shortfall = point - _q([p0, p0, p3, p3], u)
+        shortfall = point - bezier_point([p0, p0, p3, p3], u)
         x[0] += np.dot(a[i, 0], shortfall)
         x[1] += np.dot(a[i, 1], shortfall)
 
@@ -130,7 +130,7 @@ def _compute_max_error(
     max_dist = 0.0
     split_point = len(points) // 2
     for i, (point, u) in enumerate(zip(points, parameters)):
-        dist = float(np.linalg.norm(_q(bezier, u) - point))
+        dist = float(np.linalg.norm(bezier_point(bezier, u) - point))
         if dist > max_dist:
             max_dist = dist
             split_point = i
@@ -147,7 +147,7 @@ def _reparameterize(
 
 
 def _newton_raphson_root_find(bezier: list[np.ndarray], point: np.ndarray, u: float) -> float:
-    d = _q(bezier, u) - point
+    d = bezier_point(bezier, u) - point
     qp = _q_prime(bezier, u)
     numerator = np.dot(d, qp)
     denominator = np.dot(qp, qp) + np.dot(d, _q_prime_prime(bezier, u))

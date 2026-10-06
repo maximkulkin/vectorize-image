@@ -15,7 +15,7 @@ def main() -> int:
     window.show()
 
     if len(sys.argv) > 1:
-        window._load_image(sys.argv[1])
+        window.load_image(sys.argv[1])
 
     return app.exec()
 

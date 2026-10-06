@@ -20,24 +20,24 @@ from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 
 def _click(window: MainWindow, x: float, y: float) -> None:
-    vp = window.view.mapFromScene(float(x), float(y))
+    vp = window.canvas.mapFromScene(float(x), float(y))
     event = QMouseEvent(
         QEvent.Type.MouseButtonPress, vp.toPointF(), Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
     )
-    window.view.mousePressEvent(event)
+    window.canvas.mousePressEvent(event)
     QApplication.processEvents()
 
 
 def _move(window: MainWindow, x: float, y: float) -> None:
-    vp = window.view.mapFromScene(float(x), float(y))
+    vp = window.canvas.mapFromScene(float(x), float(y))
     event = QMouseEvent(QEvent.Type.MouseMove, vp.toPointF(), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
-    window.view.mouseMoveEvent(event)
+    window.canvas.mouseMoveEvent(event)
     QApplication.processEvents()
 
 
 def _escape(window: MainWindow) -> None:
     event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
-    window.view.keyPressEvent(event)
+    window.canvas.keyPressEvent(event)
     QApplication.processEvents()
 
 
@@ -49,13 +49,13 @@ def _trace_polygon(window: MainWindow, points: Sequence[tuple[float, float]]) ->
     opening click, not just by dict insertion order -- this may not be the
     first trace done in the test (e.g. a shape's hole, traced second).
     """
-    existing = set(window.manual_model.nodes)
+    existing = set(window.document.drawing.nodes)
     _click(window, *points[0])
-    first_node = next(iter(set(window.manual_model.nodes) - existing))
+    first_node = next(iter(set(window.document.drawing.nodes) - existing))
     for x, y in points[1:]:
         _move(window, x, y)
         _click(window, x, y)
-    first_pos = window.manual_model.nodes[first_node]
+    first_pos = window.document.drawing.nodes[first_node]
     _move(window, *first_pos)
     _click(window, *first_pos)
 
@@ -68,17 +68,17 @@ DIAMOND_CORNERS = [(75, 10), (140, 75), (75, 140), (10, 75)]
 
 
 def test_switching_to_trace_tool_updates_visibility_and_settings(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
 
     window.trace_tool_action.setChecked(True)
 
-    assert window._tool == "trace"
+    assert window.tool is window.trace_tool
     assert window.manual_group.isVisible()
-    assert not window.vector_item.isVisible()
-    assert not window.wireframe_item.isVisible()
-    assert window.manual_trace_item.isVisible()
+    assert not window.canvas.vector_item.isVisible()
+    assert not window.canvas.wireframe_item.isVisible()
+    assert window.canvas.drawing_item.isVisible()
     assert not window.simplify_row.isEnabled()
     assert not window.corner_row.isEnabled()
     assert not window.max_error_row.isEnabled()
@@ -86,36 +86,36 @@ def test_switching_to_trace_tool_updates_visibility_and_settings(window: MainWin
     assert not window.wireframe_checkbox.isEnabled()
     # threshold/invert still matter in manual mode (they drive edge snapping)
     assert window.auto_threshold_checkbox.isEnabled()
-    assert len(window.manual_model._contours) == 1
+    assert len(window.document.drawing._contours) == 1
 
 
 def test_switching_back_to_auto_restores_settings_and_revectorizes(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
 
     window.auto_tool_action.setChecked(True)
 
-    assert window._tool == "auto"
-    assert window.vector_item.isVisible()
-    assert not window.manual_trace_item.isVisible()
+    assert window.tool is window.auto_tool
+    assert window.canvas.vector_item.isVisible()
+    assert not window.canvas.drawing_item.isVisible()
     assert not window.manual_group.isVisible()
     assert window.simplify_row.isEnabled()
     wait_until(lambda: "Vectorizing" not in window.statusBar().currentMessage())
 
 
 def test_clicking_around_a_shape_and_closing_produces_a_closed_loop(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _trace_polygon(window, DIAMOND_CORNERS)
 
-    assert window.manual_model.active_node is None  # closing stops the active chain
-    loops = window.manual_model.closed_loops()
+    assert window.document.drawing.active_node is None  # closing stops the active chain
+    loops = window.document.drawing.closed_loops()
     assert len(loops) == 1
     assert len(loops[0]) == 4
     assert window.save_action.isEnabled()
@@ -130,16 +130,16 @@ def test_fitted_segments_stay_close_to_the_actual_edge(window: MainWindow, diamo
     ending up far outside the actual shape. The edge source must be
     simplified before being used for snapping/fitting.
     """
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _trace_polygon(window, DIAMOND_CORNERS)
 
-    assert len(window.manual_model.segments) == 4
-    for seg in window.manual_model.segments:
+    assert len(window.document.drawing.segments) == 4
+    for seg in window.document.drawing.segments:
         for point in seg.bezier:
             # generous bounding box around the 150x150 diamond image --
             # the old bug put a control point at x=170 on a shape whose
@@ -149,56 +149,58 @@ def test_fitted_segments_stay_close_to_the_actual_edge(window: MainWindow, diamo
 
 
 def test_escape_then_resume_continues_the_same_chain(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _click(window, *DIAMOND_CORNERS[0])
     _move(window, *DIAMOND_CORNERS[1])
     _click(window, *DIAMOND_CORNERS[1])
-    dangling_pos = window.manual_model.nodes[window.manual_model.active_node]
+    active_node = window.document.drawing.active_node
+    assert active_node is not None
+    dangling_pos = window.document.drawing.nodes[active_node]
 
     _escape(window)
-    assert window.manual_model.active_node is None
-    assert len(window.manual_model.segments) == 1
+    assert window.document.drawing.active_node is None
+    assert len(window.document.drawing.segments) == 1
 
     _move(window, *dangling_pos)
     _click(window, *dangling_pos)
-    assert window.manual_model.active_node is not None
+    assert window.document.drawing.active_node is not None
 
     _move(window, *DIAMOND_CORNERS[2])
     _click(window, *DIAMOND_CORNERS[2])
-    assert len(window.manual_model.segments) == 2
+    assert len(window.document.drawing.segments) == 2
 
 
 def test_escape_right_after_starting_discards_the_orphan_point(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _click(window, *DIAMOND_CORNERS[0])
-    assert len(window.manual_model.nodes) == 1
+    assert len(window.document.drawing.nodes) == 1
 
     _escape(window)
 
-    assert window.manual_model.nodes == {}
+    assert window.document.drawing.nodes == {}
 
 
 def test_manually_tracing_a_hole_groups_with_its_outer_shape(window: MainWindow, donut_path: str) -> None:
-    window._load_image(donut_path)
+    window.load_image(donut_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
     _trace_polygon(window, [(50, 10), (90, 50), (50, 90), (10, 50)])
     _trace_polygon(window, [(50, 30), (70, 50), (50, 70), (30, 50)])
 
-    loops = window.manual_model.closed_loops()
+    loops = window.document.drawing.closed_loops()
     assert len(loops) == 2
     shapes = closed_loop_shapes(loops)
     assert len(shapes) == 1
@@ -206,9 +208,9 @@ def test_manually_tracing_a_hole_groups_with_its_outer_shape(window: MainWindow,
 
 
 def test_save_svg_in_manual_mode_exports_closed_loops(window: MainWindow, diamond_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
     _trace_polygon(window, DIAMOND_CORNERS)
@@ -226,9 +228,9 @@ def test_save_svg_in_manual_mode_exports_closed_loops(window: MainWindow, diamon
 
 
 def test_save_disabled_in_manual_mode_until_a_loop_closes(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
     assert not window.save_action.isEnabled()
@@ -242,7 +244,7 @@ def test_save_disabled_in_manual_mode_until_a_loop_closes(window: MainWindow, di
     _click(window, *DIAMOND_CORNERS[2])
     _move(window, *DIAMOND_CORNERS[3])
     _click(window, *DIAMOND_CORNERS[3])
-    first_pos = window.manual_model.nodes[next(iter(window.manual_model.nodes))]
+    first_pos = window.document.drawing.nodes[next(iter(window.document.drawing.nodes))]
     _move(window, *first_pos)
     _click(window, *first_pos)
 
@@ -252,29 +254,30 @@ def test_save_disabled_in_manual_mode_until_a_loop_closes(window: MainWindow, di
 def test_hovering_near_an_open_point_before_starting_highlights_it_too(window: MainWindow, diamond_path: str) -> None:
     """Even with no chain in progress, hovering near a dangling point should
     show it's resumable -- not just after the user has already clicked."""
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
 
     _click(window, *DIAMOND_CORNERS[0])
     _move(window, *DIAMOND_CORNERS[1])
     _click(window, *DIAMOND_CORNERS[1])
-    dangling_node = window.manual_model.active_node
-    dangling_pos = window.manual_model.nodes[dangling_node]
+    dangling_node = window.document.drawing.active_node
+    assert dangling_node is not None
+    dangling_pos = window.document.drawing.nodes[dangling_node]
     _escape(window)
-    assert window.manual_model.active_node is None
+    assert window.document.drawing.active_node is None
 
     _move(window, *dangling_pos)
 
-    assert window.manual_trace_item._preview_snap_target == dangling_node
-    assert window.manual_trace_item._preview_bezier is None  # nothing to draw a curve toward yet
+    assert window.trace_tool.snap_target == dangling_node
+    assert window.trace_tool.preview_bezier is None  # nothing to draw a curve toward yet
 
 
 def test_hovering_near_an_open_point_sets_the_snap_highlight(window: MainWindow, diamond_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     window._clear_manual_trace()  # start from a clean slate, not the auto-seeded shape
 
@@ -282,27 +285,27 @@ def test_hovering_near_an_open_point_sets_the_snap_highlight(window: MainWindow,
     for x, y in DIAMOND_CORNERS[1:]:
         _move(window, x, y)
         _click(window, x, y)
-    first_node = next(iter(window.manual_model.nodes))
-    first_pos = window.manual_model.nodes[first_node]
+    first_node = next(iter(window.document.drawing.nodes))
+    first_pos = window.document.drawing.nodes[first_node]
 
     _move(window, *first_pos)
 
-    assert window.manual_trace_item._preview_snap_target == first_node
+    assert window.trace_tool.snap_target == first_node
 
 
 def test_loading_a_new_image_clears_manual_trace(window: MainWindow, diamond_path: str, donut_path: str) -> None:
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
     _trace_polygon(window, DIAMOND_CORNERS)
-    assert window.manual_model.closed_loops()
+    assert window.document.drawing.closed_loops()
 
-    window._load_image(donut_path)
+    window.load_image(donut_path)
 
-    assert window.manual_model.nodes == {}
-    assert window.manual_model.segments == []
-    wait_until(lambda: len(window.manual_model._contours) == 2)  # donut: ring + hole
+    assert window.document.drawing.nodes == {}
+    assert window.document.drawing.segments == []
+    wait_until(lambda: len(window.document.drawing._contours) == 2)  # donut: ring + hole
 
 
 def test_hover_preview_updates_on_plain_mouse_movement_with_no_button_held(window: MainWindow, diamond_path: str) -> None:
@@ -316,22 +319,41 @@ def test_hover_preview_updates_on_plain_mouse_movement_with_no_button_held(windo
     """
     from PySide6.QtTest import QTest
 
-    window._load_image(diamond_path)
+    window.load_image(diamond_path)
     window._run_vectorize()
-    wait_until(lambda: window.last_svg is not None)
+    wait_until(lambda: window.document.auto_svg is not None)
     window.trace_tool_action.setChecked(True)
 
-    assert window.view.hasMouseTracking()
-    assert window.view.viewport().hasMouseTracking()
+    assert window.canvas.hasMouseTracking()
+    assert window.canvas.viewport().hasMouseTracking()
 
-    viewport = window.view.viewport()
-    start_vp = window.view.mapFromScene(*_as_floats(DIAMOND_CORNERS[0]))
+    viewport = window.canvas.viewport()
+    start_vp = window.canvas.mapFromScene(*_as_floats(DIAMOND_CORNERS[0]))
     QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start_vp)
     QApplication.processEvents()
-    assert window.manual_model.active_node is not None
+    assert window.document.drawing.active_node is not None
 
-    target_vp = window.view.mapFromScene(*_as_floats(DIAMOND_CORNERS[1]))
+    target_vp = window.canvas.mapFromScene(*_as_floats(DIAMOND_CORNERS[1]))
     QTest.mouseMove(viewport, target_vp)  # no button held, unlike a drag
     QApplication.processEvents()
 
-    assert window.manual_trace_item._preview_bezier is not None
+    assert window.trace_tool.preview_bezier is not None
+
+
+def test_trace_preview_is_dropped_when_the_drawing_changes_underneath_it(window: MainWindow, diamond_path: str) -> None:
+    """The Trace tool listens to the drawing: a preview computed against
+    the old drawing (here, before an undo) must not linger."""
+    window.load_image(diamond_path)
+    window._run_vectorize()
+    wait_until(lambda: window.document.auto_svg is not None)
+    window.trace_tool_action.setChecked(True)
+    window._clear_manual_trace()
+
+    _click(window, *DIAMOND_CORNERS[0])
+    _move(window, *DIAMOND_CORNERS[1])
+    assert window.trace_tool.preview_bezier is not None
+
+    window.undo_action.trigger()
+
+    assert window.trace_tool.preview_bezier is None
+    assert window.document.drawing.nodes == {}

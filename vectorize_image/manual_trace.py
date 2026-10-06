@@ -35,6 +35,10 @@ by hand instead of re-run with different settings.
 
 Every committed change (not each individual mouse-move frame of a drag) is
 one undo step -- see `checkpoint`/`undo`/`redo`.
+
+Every public mutator emits `ManualTraceModel.changed` once it's done (a
+psygnal signal, so this module stays Qt-free), which is how views know to
+repaint and tools know to react -- nobody has to be told to refresh.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from collections.abc import Callable, Collection, Iterable, Set
 from typing import ClassVar, TypedDict, assert_never, final
 
 import numpy as np
+from psygnal import Signal
 
 from . import curve_fit, simplify
 from .typedefs import Bezier, Contour, ControlHandle, Handle, PointLike, SelectionItem, SelectionMode, Shape
@@ -74,6 +79,15 @@ def _nearest_index(points: np.ndarray, pos: np.ndarray) -> int:
     return int(np.argmin(np.sum((points - pos) ** 2, axis=1)))
 
 
+def _handles(items: Iterable[SelectionItem]) -> list[Handle]:
+    return [item for item in items if isinstance(item, tuple)]
+
+
+def _indices(items: Iterable[SelectionItem]) -> list[int]:
+    """Segment indices (Curves mode) or node ids (Contours mode)."""
+    return [item for item in items if isinstance(item, int)]
+
+
 class _Snapshot(TypedDict):
     nodes: dict[int, np.ndarray]
     node_contour: dict[int, int | None]
@@ -102,6 +116,10 @@ def _walk_contour(points: np.ndarray, start_idx: int, end_idx: int) -> list[np.n
 
 
 class ManualTraceModel:
+    # Emitted after any change to the drawing (nodes, segments, the active
+    # node) or its undo history.
+    changed: ClassVar[Signal] = Signal()
+
     def __init__(self) -> None:
         self.nodes: dict[int, np.ndarray] = {}
         self.node_contour: dict[int, int | None] = {}
@@ -148,6 +166,7 @@ class ManualTraceModel:
         self.node_contour.clear()
         self.segments.clear()
         self.active_node = None
+        self.changed.emit()
 
     def load_shapes(self, shapes: list[Shape]) -> None:
         """Seed the graph from an already-fitted shape list (e.g. the
@@ -161,6 +180,7 @@ class ManualTraceModel:
         for shape in shapes:
             for contour in shape:
                 self._load_contour(contour)
+        self.changed.emit()
 
     def _load_contour(self, contour: Contour) -> None:
         if not contour:
@@ -208,6 +228,7 @@ class ManualTraceModel:
         undos to fully revert.
         """
         self._push_undo()
+        self.changed.emit()
 
     def cancel_checkpoint(self) -> None:
         """Discard the most recent checkpoint, restoring the state to just
@@ -218,6 +239,7 @@ class ManualTraceModel:
         if not self._undo_stack:
             return
         self._restore(self._undo_stack.pop())
+        self.changed.emit()
 
     def can_undo(self) -> bool:
         return bool(self._undo_stack)
@@ -230,6 +252,7 @@ class ManualTraceModel:
             return False
         self._redo_stack.append(self._snapshot())
         self._restore(self._undo_stack.pop())
+        self.changed.emit()
         return True
 
     def redo(self) -> bool:
@@ -237,6 +260,7 @@ class ManualTraceModel:
             return False
         self._undo_stack.append(self._snapshot())
         self._restore(self._redo_stack.pop())
+        self.changed.emit()
         return True
 
     # ------------------------------------------------------------ query
@@ -324,6 +348,7 @@ class ManualTraceModel:
         existing = self.find_dangling_near(pos, snap_radius)
         if existing is not None:
             self.active_node = existing  # just a cursor change, not a data edit -- no checkpoint
+            self.changed.emit()
             return existing
 
         self._push_undo()
@@ -375,6 +400,7 @@ class ManualTraceModel:
 
         self.segments.append(Segment(start_node, end_node, bezier))
         self.active_node = None if self.degree(end_node) >= 2 else end_node
+        self.changed.emit()
         return True
 
     def cancel(self) -> None:
@@ -426,7 +452,7 @@ class ManualTraceModel:
         ts = np.linspace(0.0, 1.0, samples)
         for i, seg in enumerate(self.segments):
             for t in ts:
-                point = curve_fit._q(seg.bezier, float(t))
+                point = curve_fit.bezier_point(seg.bezier, float(t))
                 dist = float(np.linalg.norm(point - pos))
                 if dist <= best_dist:
                     best_dist = dist
@@ -475,6 +501,7 @@ class ManualTraceModel:
         else:
             _, seg_idx, which = handle
             self.segments[seg_idx].bezier[which] = new_pos
+        self.changed.emit()
 
     def _move_anchor(self, node_id: int, new_pos: np.ndarray) -> None:
         """Move an anchor point. The near control point of each attached
@@ -514,9 +541,10 @@ class ManualTraceModel:
           full connected component (open or closed) of each.
         """
         if mode == "points":
-            anchors = {item[1] for item in items if item[0] == "anchor"}
+            handles = _handles(items)
+            anchors = {item[1] for item in handles if item[0] == "anchor"}
             standalone: set[ControlHandle] = set()
-            for item in items:
+            for item in handles:
                 if item[0] != "control":
                     continue
                 _, seg_idx, which = item
@@ -529,7 +557,7 @@ class ManualTraceModel:
             return anchors, standalone, set()
 
         if mode == "curves":
-            seg_indices = {i for i in items if 0 <= i < len(self.segments)}
+            seg_indices = {i for i in _indices(items) if 0 <= i < len(self.segments)}
             nodes: set[int] = set()
             for i in seg_indices:
                 seg = self.segments[i]
@@ -561,10 +589,10 @@ class ManualTraceModel:
         """
         if hit is None:
             return None
-        if mode != "contours":
+        if mode != "contours" or not isinstance(hit, int):
             return hit if hit in existing else None
         hit_nodes, _ = self.connected_component(hit)
-        for rep in existing:
+        for rep in _indices(existing):
             if rep in hit_nodes:
                 return rep
         return None
@@ -594,6 +622,7 @@ class ManualTraceModel:
             _, seg_idx, which = handle
             if seg_idx < len(self.segments):
                 self.segments[seg_idx].bezier[which] = original + delta
+        self.changed.emit()
 
     def delete_selection(self, mode: SelectionMode, items: Iterable[SelectionItem]) -> bool:
         """Remove a resolved selection as one undo step. Points mode only
@@ -608,21 +637,23 @@ class ManualTraceModel:
         stack) if the selection has nothing actually deletable in it.
         """
         if mode == "points":
-            anchors = {item[1] for item in items if item[0] == "anchor"}
+            anchors = {item[1] for item in _handles(items) if item[0] == "anchor"}
             if not anchors:
                 return False
             self._push_undo()
             for node_id in anchors:
                 self._detach_node(node_id)
+            self.changed.emit()
             return True
 
         if mode == "curves":
-            seg_indices = {i for i in items if 0 <= i < len(self.segments)}
+            seg_indices = {i for i in _indices(items) if 0 <= i < len(self.segments)}
             if not seg_indices:
                 return False
             self._push_undo()
             for i in sorted(seg_indices, reverse=True):
                 del self.segments[i]
+            self.changed.emit()
             return True
 
         if mode == "contours":
@@ -638,9 +669,10 @@ class ManualTraceModel:
                     del self.node_contour[node_id]
             if self.active_node in nodes:
                 self.active_node = None
+            self.changed.emit()
             return True
 
-        return False
+        assert_never(mode)
 
     def _detach_node(self, node_id: int) -> None:
         """Remove a node and every segment still attached to it."""
@@ -711,13 +743,13 @@ class ManualTraceModel:
                 reps.add(node_id)
             return reps
 
-        return set()
+        assert_never(mode)
 
     @staticmethod
     def _segment_matches(seg: Segment, predicate: _Predicate) -> bool:
         if predicate(seg.bezier[0]) or predicate(seg.bezier[3]):
             return True
-        return any(predicate(curve_fit._q(seg.bezier, t)) for t in np.linspace(0.05, 0.95, 19))
+        return any(predicate(curve_fit.bezier_point(seg.bezier, float(t))) for t in np.linspace(0.05, 0.95, 19))
 
     # -------------------------------------------------------- extraction
 
