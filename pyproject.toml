@@ -30,3 +30,26 @@ packages = ["vectorize_image", "vectorize_image.gui"]
 
 [tool.setuptools.package-data]
 "vectorize_image.gui" = ["icons/*.svg"]
+
+[tool.basedpyright]
+include = ["vectorize_image", "tests"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "recommended"
+# The few "recommended" rules that don't fit this codebase:
+# numpy's indexing and most of its functions are typed as returning Any, so
+# this would flag nearly every array expression.
+reportAny = false
+# Qt and argparse builder calls (addWidget, addAction, add_argument, ...)
+# return values that are routinely and intentionally ignored.
+reportUnusedCallResult = false
+# MainWindow builds its widgets in _build_* helpers called from __init__,
+# which this rule can't see through.
+reportUninitializedInstanceVariable = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+extraPaths = [".", "tests"]
+# Tests deliberately inspect and drive internals.
+reportPrivateUsage = false
