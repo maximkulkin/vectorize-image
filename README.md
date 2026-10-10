@@ -78,7 +78,7 @@ error; min area) as paired slider + spin-box controls. Opening an image
 doesn't trace it right away — tracing can be slow on a large image, and
 plenty of sessions go straight to Pen/Edit without ever needing
 it — so the overlay stays empty until you change one of these settings (or
-switch to/back onto the Automatic tool), which re-runs vectorization
+switch to/back onto the AutoTrace tool), which re-runs vectorization
 automatically, debounced by ~150ms and off the UI thread, so dragging a
 slider stays smooth even while it's recomputing.
 
@@ -95,8 +95,8 @@ whether you're looking at the whole image or zoomed in on one corner.
 
 ### Tools
 
-Automatic tracing is only one of three **Tool** buttons on the toolbar's
-second row (wand / pen / cursor icons) — switch to **Manual Trace** to draw
+**AutoTrace** is only one of three **Tool** buttons on the toolbar's
+second row (wand over a polygon / pencil on a curve / square with one point enlarged) — switch to **Pen** to draw
 curves by hand where the automatic settings won't nail a shape, or **Edit**
 to select and fix up curves (from either tool) that didn't come out quite
 right. Pen and Edit share the same underlying set of points and

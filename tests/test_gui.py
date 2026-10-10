@@ -23,7 +23,7 @@ def test_loading_an_image_does_not_trigger_vectorization(window: MainWindow, don
     """Automatic tracing can be slow on a large image, and plenty of
     sessions go straight to Pen/Edit without ever needing it -- so
     opening an image should leave last_svg alone until a setting changes or
-    the Automatic tool is (re-)selected."""
+    the AutoTrace tool is (re-)selected."""
     assert window.document.auto_svg is None
     window.load_image(donut_path)
     QApplication.processEvents()

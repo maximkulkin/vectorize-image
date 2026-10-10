@@ -144,7 +144,7 @@ class Tool:
 
 
 class AutoTool(Tool):
-    """Automatic tracing. No canvas interaction; it just shows the
+    """AutoTrace: automatic tracing. No canvas interaction; it just shows the
     automatic result's layers. (Running the pipeline itself is driven by
     the settings sidebar, in MainWindow.)"""
 

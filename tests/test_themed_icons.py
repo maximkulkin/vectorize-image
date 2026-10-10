@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from vectorize_image.gui.themed_icons import DARK_INK, INK, themed_icon  # noqa: E402
 
-# A point well inside the Automatic icon's solid wand stick, in its 22x22
+# A point well inside the AutoTrace icon's solid wand stick, in its 22x22
 # viewBox.
 _INK_PIXEL = (16, 16)
 
@@ -42,11 +42,11 @@ def _ink_color(icon: QIcon) -> str:
 def test_icons_use_their_own_colors_on_a_light_palette(app: QApplication) -> None:
     app.setPalette(QPalette(QColor("#ececec")))
 
-    assert _ink_color(themed_icon("auto")) == INK
+    assert _ink_color(themed_icon("autotrace")) == INK
 
 
 def test_icons_switch_to_lighter_colors_on_a_dark_palette_and_back(app: QApplication) -> None:
-    icon = themed_icon("auto")
+    icon = themed_icon("autotrace")
 
     app.setPalette(_dark_palette())
     assert _ink_color(icon) == DARK_INK
@@ -58,7 +58,7 @@ def test_icons_switch_to_lighter_colors_on_a_dark_palette_and_back(app: QApplica
 def test_icons_render_sharp_at_high_dpi(app: QApplication) -> None:
     del app  # requested only so the QApplication exists
 
-    pixmap = themed_icon("auto").pixmap(QSize(22, 22), 2.0)
+    pixmap = themed_icon("autotrace").pixmap(QSize(22, 22), 2.0)
 
     assert pixmap.size() == QSize(44, 44)
     assert pixmap.devicePixelRatio() == 2.0
@@ -67,7 +67,7 @@ def test_icons_render_sharp_at_high_dpi(app: QApplication) -> None:
 def test_disabled_icons_are_still_drawn(app: QApplication) -> None:
     del app  # requested only so the QApplication exists
 
-    pixmap = themed_icon("auto").pixmap(QSize(22, 22), QIcon.Mode.Disabled)
+    pixmap = themed_icon("autotrace").pixmap(QSize(22, 22), QIcon.Mode.Disabled)
 
     assert not pixmap.isNull()
     assert pixmap.toImage().pixelColor(*_INK_PIXEL).alpha() > 0

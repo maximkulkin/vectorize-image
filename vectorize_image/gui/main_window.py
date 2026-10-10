@@ -188,10 +188,10 @@ class MainWindow(QMainWindow):
         self.delete_action.setEnabled(False)
         self.delete_action.triggered.connect(self._delete_selection)
 
-        self.auto_tool_action = QAction(themed_icon("auto"), "&Automatic", self)
+        self.auto_tool_action = QAction(themed_icon("autotrace"), "&AutoTrace", self)
         self.auto_tool_action.setCheckable(True)
         self.auto_tool_action.setChecked(True)
-        self.auto_tool_action.setToolTip("Automatic tracing")
+        self.auto_tool_action.setToolTip("AutoTrace: trace the whole image automatically")
         self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
         self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge")
@@ -453,7 +453,7 @@ class MainWindow(QMainWindow):
         # Automatic tracing doesn't run on its own -- it can be slow on a
         # large image, and many sessions go straight to Pen/Edit
         # without ever needing it. It starts as soon as a setting changes
-        # (via the debounce) or the Automatic tool is (re-)selected. Trace
+        # (via the debounce) or the AutoTrace tool is (re-)selected. Trace
         # and Edit still need a fresh edge source to snap to, though --
         # that's a cheap bitmap trace, not the full curve-fitting pipeline.
         if not self.tool.edits_drawing:
