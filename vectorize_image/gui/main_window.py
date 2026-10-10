@@ -234,7 +234,7 @@ class MainWindow(QMainWindow):
         _when_checked(self.curves_mode_action, lambda: self.document.selection.set_mode("curves"))
         _when_checked(self.contours_mode_action, lambda: self.document.selection.set_mode("contours"))
 
-        self.move_select_action = QAction(themed_icon("select_move"), "&Move", self)
+        self.move_select_action = QAction(themed_icon("move"), "&Move", self)
         self.move_select_action.setCheckable(True)
         self.move_select_action.setChecked(True)
         self.move_select_action.setToolTip("Move: click to select, drag a selected item to move it")
