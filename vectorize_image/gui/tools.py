@@ -177,7 +177,7 @@ class AutoTool(Tool):
 
 
 class TraceTool(Tool):
-    """Manual Trace: click to place points, each new segment previewed live
+    """Pen: click to place points, each new segment previewed live
     and snapped to the nearest edge."""
 
     name: ClassVar[str] = "trace"

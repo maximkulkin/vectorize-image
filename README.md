@@ -76,7 +76,7 @@ exposes every vectorization setting from the table above (threshold, with an
 Auto/manual toggle; invert; simplify tolerance; corner threshold; max curve
 error; min area) as paired slider + spin-box controls. Opening an image
 doesn't trace it right away — tracing can be slow on a large image, and
-plenty of sessions go straight to Manual Trace/Edit without ever needing
+plenty of sessions go straight to Pen/Edit without ever needing
 it — so the overlay stays empty until you change one of these settings (or
 switch to/back onto the Automatic tool), which re-runs vectorization
 automatically, debounced by ~150ms and off the UI thread, so dragging a
@@ -99,7 +99,7 @@ Automatic tracing is only one of three **Tool** buttons on the toolbar's
 second row (wand / pen / cursor icons) — switch to **Manual Trace** to draw
 curves by hand where the automatic settings won't nail a shape, or **Edit**
 to select and fix up curves (from either tool) that didn't come out quite
-right. Manual Trace and Edit share the same underlying set of points and
+right. Pen and Edit share the same underlying set of points and
 curves, so you can switch between drawing and adjusting freely without
 losing work; the first time you switch to either one, it starts from
 whatever the automatic pipeline last produced, so "trace automatically,
@@ -108,7 +108,7 @@ a blank canvas. Threshold and invert still apply in both (they control what
 edges there are to snap to); the curve-fit-specific settings don't, since
 there's no automatic fitting happening in either to tune.
 
-#### Manual Trace
+#### Pen
 
 A click-to-place "magnetic pen":
 

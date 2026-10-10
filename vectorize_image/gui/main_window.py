@@ -200,9 +200,9 @@ class MainWindow(QMainWindow):
         self.auto_tool_action.setCheckable(True)
         self.auto_tool_action.setChecked(True)
         self.auto_tool_action.setToolTip("Automatic tracing")
-        self.trace_tool_action = QAction(_icon("trace"), "&Manual Trace", self)
+        self.trace_tool_action = QAction(_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
-        self.trace_tool_action.setToolTip("Manual Trace: click to place points, snapped to the nearest edge")
+        self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge")
         self.edit_tool_action = QAction(_icon("edit"), "&Edit", self)
         self.edit_tool_action.setCheckable(True)
         self.edit_tool_action.setToolTip("Edit: select and move or delete points, curves, or contours")
@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Vectorize Image — {path}")
         self._update_save_enabled()
         # Automatic tracing doesn't run on its own -- it can be slow on a
-        # large image, and many sessions go straight to Manual Trace/Edit
+        # large image, and many sessions go straight to Pen/Edit
         # without ever needing it. It starts as soon as a setting changes
         # (via the debounce) or the Automatic tool is (re-)selected. Trace
         # and Edit still need a fresh edge source to snap to, though --

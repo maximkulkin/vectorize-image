@@ -21,7 +21,7 @@ from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 def test_loading_an_image_does_not_trigger_vectorization(window: MainWindow, donut_path: str) -> None:
     """Automatic tracing can be slow on a large image, and plenty of
-    sessions go straight to Manual Trace/Edit without ever needing it -- so
+    sessions go straight to Pen/Edit without ever needing it -- so
     opening an image should leave last_svg alone until a setting changes or
     the Automatic tool is (re-)selected."""
     assert window.document.auto_svg is None
