@@ -1,3 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
-  <polygon points="5,3 5,18 9,14.5 12,20 14.5,18.7 11.5,13 17,13" fill="#464646"/>
+  <!-- The square's edges stop 0.8 short of each point, leaving a clear ring around it. -->
+  <path d="M6.5 4.5 H14.6 M17.5 7.4 V15.5 M15.5 17.5 H6.5 M4.5 15.5 V6.5" fill="none" stroke="#464646" stroke-width="1.4"/>
+  <rect x="3.3" y="3.3" width="2.4" height="2.4" fill="#007aff"/>
+  <rect x="15.4" y="2.4" width="4.2" height="4.2" fill="#007aff"/>
+  <rect x="16.3" y="16.3" width="2.4" height="2.4" fill="#007aff"/>
+  <rect x="3.3" y="16.3" width="2.4" height="2.4" fill="#007aff"/>
 </svg>

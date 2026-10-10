@@ -215,19 +215,19 @@ class MainWindow(QMainWindow):
         _when_checked(self.trace_tool_action, lambda: self._set_tool(self.trace_tool))
         _when_checked(self.edit_tool_action, lambda: self._set_tool(self.edit_tool))
 
-        self.points_mode_action = QAction(_icon("points"), "&Points", self)
+        self.points_mode_action = QAction(themed_icon("edit_points"), "Edit &points", self)
         self.points_mode_action.setCheckable(True)
         self.points_mode_action.setChecked(True)
         self.points_mode_action.setShortcut(QKeySequence(Qt.Key.Key_1))
-        self.points_mode_action.setToolTip("Select points (1)")
-        self.curves_mode_action = QAction(_icon("curves"), "&Curves", self)
+        self.points_mode_action.setToolTip("Edit points (1)")
+        self.curves_mode_action = QAction(themed_icon("edit_lines"), "Edit &lines", self)
         self.curves_mode_action.setCheckable(True)
         self.curves_mode_action.setShortcut(QKeySequence(Qt.Key.Key_2))
-        self.curves_mode_action.setToolTip("Select curves (2)")
-        self.contours_mode_action = QAction(_icon("contours"), "C&ontours", self)
+        self.curves_mode_action.setToolTip("Edit lines (2)")
+        self.contours_mode_action = QAction(themed_icon("edit_polygons"), "Edit p&olygons", self)
         self.contours_mode_action.setCheckable(True)
         self.contours_mode_action.setShortcut(QKeySequence(Qt.Key.Key_3))
-        self.contours_mode_action.setToolTip("Select contours (3)")
+        self.contours_mode_action.setToolTip("Edit polygons (3)")
 
         self._selection_mode_actions = (
             self.points_mode_action,

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
+  <!-- The square's edges stop 0.8 short of the point, leaving a clear ring around it. -->
+  <path d="M7.4 4.5 H17.5 V17.5 H4.5 V7.4" fill="none" stroke="#464646" stroke-width="1.4"/>
+  <rect x="2.4" y="2.4" width="4.2" height="4.2" fill="#007aff"/>
+</svg>

@@ -132,17 +132,17 @@ A click-to-place "magnetic pen":
 Every anchor point and control-point handle of the current curves (blue
 internal / orange open anchors, purple control points, with a dashed line
 back to the anchor they belong to) becomes directly draggable, and three
-more toolbar buttons appear (dot / curve / loop icons) for three work modes
+more toolbar buttons appear (a square with a corner point / one side / the whole square highlighted) for three work modes
 that control what a click picks — each also has a number-key shortcut:
 
-- **Points** (`1`) — clicking selects one anchor or control-point handle.
-- **Curves** (`2`) — clicking anywhere along a segment's curve selects that
+- **Edit points** (`1`) — clicking selects one anchor or control-point handle.
+- **Edit lines** (`2`) — clicking anywhere along a segment's curve selects that
   whole segment (both its endpoints).
-- **Contours** (`3`) — clicking anywhere along any segment of a contour
+- **Edit polygons** (`3`) — clicking anywhere along any segment of a contour
   selects the entire connected contour (every node and segment in it, open
   or closed), no matter which point along it you clicked.
 
-A second row of three toolbar buttons (arrow / dashed-box / dashed-circle
+A second row of three toolbar buttons (four-way arrows / dashed-box / dashed-circle
 icons) picks *how* a click or drag builds that selection:
 
 - **Move** (the default) — **click** an item to select just it;
@@ -174,11 +174,11 @@ reverts to the selection it had before the stroke began.
 **Edit → Delete Selection** (`Delete`/`Backspace`, also on the toolbar)
 removes whatever's selected and is itself undoable:
 
-- **Points** mode deletes the selected anchors, along with every segment
+- **Edit points** mode deletes the selected anchors, along with every segment
   attached to them.
-- **Curves** mode deletes the selected segments but keeps their endpoints
+- **Edit lines** mode deletes the selected segments but keeps their endpoints
   (and any other segments still attached to them) in place.
-- **Contours** mode deletes the selected contours entirely.
+- **Edit polygons** mode deletes the selected contours entirely.
 
 Both tools: a fully closed loop (drawn filled, in the same overlay
 color/opacity as above) is a real shape — closing one inside another makes

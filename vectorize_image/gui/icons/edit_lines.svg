@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
+  <!-- The rest of the square stops 0.8 short of the highlighted left side, leaving a clear gap. -->
+  <path d="M6.8 4.5 H17.5 V17.5 H6.8" fill="none" stroke="#464646" stroke-width="1.4"/>
+  <rect x="3" y="3.8" width="3" height="14.4" fill="#007aff"/>
+</svg>
