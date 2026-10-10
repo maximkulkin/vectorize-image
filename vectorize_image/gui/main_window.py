@@ -4,11 +4,10 @@ it, and the automatic-tracing pipeline that feeds the document."""
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import TypedDict
 
 from PySide6.QtCore import Qt, QTimer, QThreadPool
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -31,20 +30,13 @@ from ..document import Document
 from ..manual_trace import closed_loop_shapes
 from ..typedefs import Shape
 from .canvas import Canvas
+from .themed_icons import themed_icon
 from .tools import PAINT_SELECT_DEFAULT_RADIUS_PX, AutoTool, EditTool, Tool, TraceTool
 from .widgets import SliderSpinRow
 from .worker import VectorizeParams, VectorizeTask, WorkerSignals
 
 DEBOUNCE_MS = 150
 MANUAL_EDGE_SIMPLIFY_TOLERANCE = 1.0
-
-
-_ICONS_DIR = Path(__file__).resolve().parent / "icons"
-
-
-def _icon(name: str) -> QIcon:
-    """Loads a toolbar icon from vectorize_image/gui/icons/<name>.svg."""
-    return QIcon(str(_ICONS_DIR / f"{name}.svg"))
 
 
 class DefaultSettings(TypedDict):
@@ -172,21 +164,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Open an image to get started.")
 
     def _build_actions_and_menus(self) -> None:
-        open_action = QAction(_icon("open"), "&Open Image...", self)
+        open_action = QAction(themed_icon("open"), "&Open Image...", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_image)
 
-        self.save_action = QAction(_icon("save"), "&Save Vector as SVG...", self)
+        self.save_action = QAction(themed_icon("save"), "&Save Vector as SVG...", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.setEnabled(False)
         self.save_action.triggered.connect(self._save_svg)
 
-        self.undo_action = QAction(_icon("undo"), "&Undo", self)
+        self.undo_action = QAction(themed_icon("undo"), "&Undo", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setEnabled(False)
         self.undo_action.triggered.connect(self._undo)
 
-        self.redo_action = QAction(_icon("redo"), "&Redo", self)
+        self.redo_action = QAction(themed_icon("redo"), "&Redo", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setEnabled(False)
         self.redo_action.triggered.connect(self._redo)
@@ -196,14 +188,14 @@ class MainWindow(QMainWindow):
         self.delete_action.setEnabled(False)
         self.delete_action.triggered.connect(self._delete_selection)
 
-        self.auto_tool_action = QAction(_icon("auto"), "&Automatic", self)
+        self.auto_tool_action = QAction(themed_icon("auto"), "&Automatic", self)
         self.auto_tool_action.setCheckable(True)
         self.auto_tool_action.setChecked(True)
         self.auto_tool_action.setToolTip("Automatic tracing")
-        self.trace_tool_action = QAction(_icon("pen"), "&Pen", self)
+        self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
         self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge")
-        self.edit_tool_action = QAction(_icon("edit"), "&Edit", self)
+        self.edit_tool_action = QAction(themed_icon("edit"), "&Edit", self)
         self.edit_tool_action.setCheckable(True)
         self.edit_tool_action.setToolTip("Edit: select and move or delete points, curves, or contours")
 
@@ -242,14 +234,14 @@ class MainWindow(QMainWindow):
         _when_checked(self.curves_mode_action, lambda: self.document.selection.set_mode("curves"))
         _when_checked(self.contours_mode_action, lambda: self.document.selection.set_mode("contours"))
 
-        self.move_select_action = QAction(_icon("select_move"), "&Move", self)
+        self.move_select_action = QAction(themed_icon("select_move"), "&Move", self)
         self.move_select_action.setCheckable(True)
         self.move_select_action.setChecked(True)
         self.move_select_action.setToolTip("Move: click to select, drag a selected item to move it")
-        self.box_select_action = QAction(_icon("select_box"), "&Box Select", self)
+        self.box_select_action = QAction(themed_icon("select_box"), "&Box Select", self)
         self.box_select_action.setCheckable(True)
         self.box_select_action.setToolTip("Box Select: drag a rectangle to select anything it touches")
-        self.paint_select_action = QAction(_icon("select_paint"), "&Paint Select", self)
+        self.paint_select_action = QAction(themed_icon("select_paint"), "&Paint Select", self)
         self.paint_select_action.setCheckable(True)
         self.paint_select_action.setToolTip("Paint Select: hold and drag a brush circle to select anything it touches")
 
@@ -266,15 +258,15 @@ class MainWindow(QMainWindow):
         _when_checked(self.box_select_action, lambda: self._set_select_tool("box"))
         _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint"))
 
-        fit_action = QAction(_icon("fit"), "&Fit to Window", self)
+        fit_action = QAction(themed_icon("fit"), "&Fit to Window", self)
         fit_action.setShortcut("Ctrl+0")
         fit_action.triggered.connect(lambda: self.canvas.fit())
 
-        zoom_in_action = QAction(_icon("zoom_in"), "Zoom &In", self)
+        zoom_in_action = QAction(themed_icon("zoom_in"), "Zoom &In", self)
         zoom_in_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.ZoomIn), QKeySequence(Qt.Key.Key_Plus), QKeySequence(Qt.Key.Key_Equal)])
         zoom_in_action.triggered.connect(lambda: self.canvas.zoom_in())
 
-        zoom_out_action = QAction(_icon("zoom_out"), "Zoom &Out", self)
+        zoom_out_action = QAction(themed_icon("zoom_out"), "Zoom &Out", self)
         zoom_out_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.ZoomOut), QKeySequence(Qt.Key.Key_Minus)])
         zoom_out_action.triggered.connect(lambda: self.canvas.zoom_out())
 
