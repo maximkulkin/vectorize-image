@@ -8,8 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar, Final
 
-from psygnal import Signal
-
+from ..signals import Signal
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .vector import VectorDrawing

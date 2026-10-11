@@ -4,7 +4,7 @@ Not part of the drawing itself (nothing here is saved or undoable), but
 still model state rather than tool state: the Edit tool's select sub-tools
 all share it, the Delete action acts on it, and the drawing's view item
 highlights it. Like the drawing, it announces its own changes through
-psygnal signals rather than having callers refresh everything that shows it.
+its signals rather than having callers refresh everything that shows it.
 
 What a selected item *is* depends on the mode:
 - "points": handle tuples, ("anchor", node_id) or ("control", seg_idx, which)
@@ -19,9 +19,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar, TypeGuard, get_args
 
-from psygnal import Signal
-
 from .manual_trace import ManualTraceModel
+from .signals import Signal
 from .typedefs import SelectionItem, SelectionMode
 
 MODES: tuple[SelectionMode, ...] = get_args(SelectionMode.__value__)

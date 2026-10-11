@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
-from psygnal import SignalInstance
 
 from vectorize_image import manual_trace
 from vectorize_image.manual_trace import ManualTraceModel, closed_loop_shapes
+from vectorize_image.signals import SignalInstance
 from vectorize_image.typedefs import Contour
 
 

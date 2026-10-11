@@ -15,7 +15,7 @@ fixed references: a line's points and a polygon's rings never change.
 The VectorDrawing owns them all: it keeps where each point is and which
 elements are in the drawing, every change goes through it, and it
 announces every change -- to any point, line or polygon -- through its
-psygnal signals, which keeps the graph consistent and every view of it
+signals, which keeps the graph consistent and every view of it
 current. A removed point has no position left to go stale.
 """
 
@@ -26,8 +26,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar, Final, final, override
 
 import numpy as np
-from psygnal import Signal
-
+from ..signals import Signal
 from ..typedefs import Bezier, PointLike, Shape
 
 

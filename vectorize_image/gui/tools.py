@@ -21,13 +21,13 @@ from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from typing import ClassVar, assert_never, override
 
-from psygnal import Signal, SignalInstance
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsItem
 
 from ..document import Document
 from ..manual_trace import ManualTraceModel
 from ..selection import Selection
+from ..signals import Signal, disconnect
 from .canvas import Canvas
 from ..typedefs import Bezier, SelectionItem, SelectionMode
 from .manual_trace_item import ACTIVE_COLOR
@@ -81,13 +81,6 @@ def hit_test(model: ManualTraceModel, mode: SelectionMode, pos: tuple[float, flo
             return handle[1]
         return model.segments[handle[1]].start
     assert_never(mode)
-
-
-def _disconnect(signal: SignalInstance, slot: Callable[..., object]) -> None:
-    """signal.disconnect(slot), with the one unavoidable type-check
-    suppression in one place: psygnal annotates `slot` as a bare
-    `Callable`, which reads as partially unknown."""
-    signal.disconnect(slot)  # pyright: ignore[reportUnknownMemberType]
 
 
 class Tool:
@@ -203,7 +196,7 @@ class TraceTool(Tool):
 
     @override
     def deactivate(self) -> None:
-        _disconnect(self._model.changed, self._on_model_changed)
+        disconnect(self._model.changed, self._on_model_changed)
         self._set_preview(None, None)
         self._remove_overlays((self._curve, self._snap_ring))
         self.canvas.set_drawing_visible(False)
@@ -281,7 +274,7 @@ class SelectTool(Tool):
 
     @override
     def deactivate(self) -> None:
-        _disconnect(self._selection.mode_changed, self._on_mode_changed)
+        disconnect(self._selection.mode_changed, self._on_mode_changed)
         self._abort()
 
     def _on_mode_changed(self, _mode: str) -> None:
@@ -323,7 +316,7 @@ class MoveSelectTool(SelectTool):
 
     @override
     def deactivate(self) -> None:
-        _disconnect(self._model.changed, self._on_model_changed)
+        disconnect(self._model.changed, self._on_model_changed)
         super().deactivate()
         self._remove_overlays(self._overlay_items())
 

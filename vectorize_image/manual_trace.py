@@ -37,7 +37,7 @@ Every committed change (not each individual mouse-move frame of a drag) is
 one undo step -- see `checkpoint`/`undo`/`redo`.
 
 Every public mutator emits `ManualTraceModel.changed` once it's done (a
-psygnal signal, so this module stays Qt-free), which is how views know to
+Qt-free signal -- see signals.py), which is how views know to
 repaint and tools know to react -- nobody has to be told to refresh.
 """
 
@@ -47,9 +47,9 @@ from collections.abc import Callable, Collection, Iterable, Set
 from typing import ClassVar, TypedDict, assert_never, final
 
 import numpy as np
-from psygnal import Signal
 
 from . import curve_fit, simplify
+from .signals import Signal
 from .typedefs import Bezier, Contour, ControlHandle, Handle, PointLike, SelectionItem, SelectionMode, Shape
 
 type _Predicate = Callable[[np.ndarray], bool]

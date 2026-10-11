@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Sequence
 from typing import ClassVar, overload, override
 
-from psygnal import Signal
+from ..signals import Signal
 
 
 class ObservableList[T](Sequence[T]):

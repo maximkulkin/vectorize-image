@@ -3,7 +3,7 @@ item is a RasterImage or a VectorDrawing (of Points, Lines -- straight, or
 BezierCurves -- and Polygons).
 
 Qt-free. Everything that shows or acts on the document subscribes to the
-psygnal signals of its parts rather than being told to refresh.
+signals of its parts rather than being told to refresh.
 """
 
 from .document import Document, Item, Layer
