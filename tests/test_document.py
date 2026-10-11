@@ -119,6 +119,52 @@ def test_raster_image_open_failure_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------- Layer/Document
 
 
+def test_layer_opacity_is_clamped_and_emits_on_change() -> None:
+    layer = Layer("Ink")
+    events: list[str] = []
+    layer.changed.connect(lambda: events.append("changed"))
+    assert layer.opacity == 1.0
+
+    layer.opacity = 1.5
+    layer.opacity = 0.4
+    layer.opacity = -1
+
+    assert layer.opacity == 0.0
+    assert events == ["changed", "changed"]
+    assert Layer(opacity=2).opacity == 1.0
+
+
+def test_new_layer_goes_above_the_current_one_with_a_free_name() -> None:
+    bottom, top = Layer("bottom"), Layer("Layer 1")
+    document = Document([bottom, top])
+    document.current_layer = bottom
+
+    first = document.new_layer()
+    second = document.new_layer()
+
+    assert list(document.layers) == [bottom, first, second, top]
+    assert (first.name, second.name) == ("Layer 2", "Layer 3")
+    assert document.current_layer is second
+    assert Document().new_layer().name == "Layer 1"
+
+    document.history.undo()
+    assert list(document.layers) == [bottom, first, top] and document.current_layer is first
+    document.history.undo()
+    assert list(document.layers) == [bottom, top] and document.current_layer is bottom
+
+
+def test_move_layer_is_undoable_and_skips_no_ops() -> None:
+    a, b, c = Layer("a"), Layer("b"), Layer("c")
+    document = Document([a, b, c])
+
+    document.move_layer(a, 2)
+    assert list(document.layers) == [b, c, a]
+    document.move_layer(a, 5)  # already on top (clamped): nothing to undo
+    document.history.undo()
+    assert list(document.layers) == [a, b, c]
+    assert not document.history.can_undo()
+
+
 def test_layer_properties_emit_only_on_change() -> None:
     layer = Layer("Ink")
     events: list[str] = []
@@ -154,3 +200,75 @@ def test_layer_signals_are_per_instance() -> None:
     a.items.inserted.connect(events.append)
     b.items.append(VectorDrawing())
     assert events == []
+
+
+# ------------------------------------------------------------ current layer
+
+
+def test_document_starts_with_its_top_layer_current() -> None:
+    bottom, top = Layer("bottom"), Layer("top")
+    assert Document([bottom, top]).current_layer is top
+    assert Document().current_layer is None
+
+
+def test_the_first_layer_added_becomes_current() -> None:
+    document = Document()
+    events: list[str] = []
+    document.current_layer_changed.connect(lambda: events.append("current"))
+    first, second = Layer("first"), Layer("second")
+
+    document.layers.append(first)
+    document.layers.append(second)
+
+    assert document.current_layer is first
+    assert events == ["current"]
+
+
+def test_current_layer_must_be_in_the_document() -> None:
+    document = Document([Layer("a")])
+    with pytest.raises(ValueError):
+        document.current_layer = Layer("stranger")
+
+
+def test_removing_the_current_layer_moves_down_to_the_one_below() -> None:
+    a, b, c = Layer("a"), Layer("b"), Layer("c")
+    document = Document([a, b, c])
+    document.current_layer = b
+
+    document.layers.remove(b)
+    assert document.current_layer is a
+    document.layers.remove(a)
+    assert document.current_layer is c  # nothing below: the new bottom one
+    document.layers.remove(c)
+    assert document.current_layer is None
+
+
+def test_removing_another_layer_keeps_the_current_one() -> None:
+    a, b = Layer("a"), Layer("b")
+    document = Document([a, b])
+    document.layers.remove(a)
+    assert document.current_layer is b
+
+
+def test_current_drawing_is_the_first_vector_drawing_in_the_current_layer() -> None:
+    first, second = VectorDrawing(), VectorDrawing()
+    image = RasterImage(np.zeros((1, 1, 4), dtype=np.uint8))
+    document = Document([Layer("a", [image, first, second])])
+    assert document.current_drawing is first
+
+    document.layers.append(empty := Layer("empty"))
+    document.current_layer = empty
+    assert document.current_drawing is None
+
+
+def test_ensure_current_drawing_makes_what_is_missing() -> None:
+    document = Document()
+    drawing = document.ensure_current_drawing()
+    (layer,) = document.layers
+    assert layer.name == "Drawing" and list(layer.items) == [drawing]
+    assert document.ensure_current_drawing() is drawing
+
+    document.layers.append(other := Layer("other"))
+    document.current_layer = other
+    assert document.ensure_current_drawing() is not drawing
+    assert len(other.items) == 1

@@ -1,14 +1,14 @@
 """Main window: the Canvas showing the Document, tool and settings UI around
 it, and the automatic-tracing pipeline that feeds the document.
 
-Opening an image makes a fresh pair of layers: "Image", holding the
-picture, and "AutoTrace" above it, holding a vector drawing the automatic
-pipeline fills in. The document is the source of truth: the canvas draws
-it, and Save exports what's in it.
+Opening an image makes a fresh document of three layers, bottom to top:
+"Image", holding the picture; and "Drawing", an empty vector drawing for
+drawing by hand, which starts out as the current layer. Pen and Edit work
+on the current layer's drawing.
 
-Pen and Edit are parked -- their buttons are shown but disabled, as are
-Undo, Redo and Delete -- until they're rebuilt on the document's vector
-drawings (see tools.py).
+The document is the source of truth: the canvas and the Layers panel show
+it, every change to a drawing goes through its undo history (the
+automatic trace's results included), and Save exports what's in it.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QDockWidget,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -36,10 +37,12 @@ from PySide6.QtWidgets import (
 )
 
 from .. import svgwrite
-from ..document import Document, Layer, RasterImage, VectorDrawing
+from ..document import Batch, Command, Document, Layer, VectorDrawing
+from ..signals import disconnect
 from ..typedefs import Shape
 from .canvas import Canvas
 from .document_items import VectorStyle
+from .layers_panel import LayersPanel
 from .themed_icons import themed_icon
 from .tools import AutoTool, Tool
 from .widgets import SliderSpinRow
@@ -87,6 +90,12 @@ def _when_checked(action: QAction, callback: Callable[[], object]) -> None:
     action.toggled.connect(on_toggled)
 
 
+def _action_text(verb: str, title: str | None) -> str:
+    """"&Undo Move Layer", say -- with any "&" in the title doubled, so it
+    shows as itself rather than marking a shortcut letter."""
+    return verb if title is None else f"{verb} {title.replace('&', '&&')}"
+
+
 class MainWindow(QMainWindow):
     # Widgets and actions, created by the _build_* helpers __init__ calls.
     save_action: QAction
@@ -98,6 +107,8 @@ class MainWindow(QMainWindow):
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
     canvas: Canvas
+    layers_panel: LayersPanel
+    layers_dock: QDockWidget
     auto_threshold_checkbox: QCheckBox
     threshold_row: SliderSpinRow
     invert_checkbox: QCheckBox
@@ -121,12 +132,18 @@ class MainWindow(QMainWindow):
         self._generation: int = 0
         self._overlay_color: QColor = QColor(DEFAULTS["overlay_color"])
 
-        # The model, which the canvas draws. `image` and `auto_trace` are
-        # the parts of it this window made and fills in: the opened image,
-        # and the drawing the automatic pipeline's result goes into.
+        # The model. The canvas, the Layers panel and the tools subscribe to
+        # its signals; so does the window, to keep its actions and status
+        # bar in sync. `image` and `auto_trace` are the parts of it this
+        # window made and fills in: the opened image, and the drawing the
+        # automatic pipeline's result goes into.
         self.document: Document = Document()
         self.image: RasterImage | None = None
         self.auto_trace: VectorDrawing | None = None
+        self.document.history.changed.connect(self._on_document_changed)
+        self.document.current_layer_changed.connect(self._on_document_changed)
+        self.document.layers.inserted.connect(self._on_layer_inserted)
+        self.document.layers.removed.connect(self._on_layer_removed)
 
         self.threadpool: QThreadPool = QThreadPool.globalInstance()
         self.signals: WorkerSignals = WorkerSignals()
@@ -145,6 +162,7 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- UI
 
     def _build_ui(self) -> None:
+        self._build_layers_dock()
         self._build_actions_and_menus()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -167,14 +185,15 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(False)
         self.save_action.triggered.connect(self._save_svg)
 
-        # Parked along with Pen and Edit, the only tools that edit by hand.
         self.undo_action = QAction(themed_icon("undo"), "&Undo", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setEnabled(False)
+        self.undo_action.triggered.connect(self.document.history.undo)
 
         self.redo_action = QAction(themed_icon("redo"), "&Redo", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setEnabled(False)
+        self.redo_action.triggered.connect(self.document.history.redo)
 
         self.delete_action = QAction("&Delete Selection", self)
         self.delete_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Delete), QKeySequence(Qt.Key.Key_Backspace)])
@@ -231,6 +250,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(zoom_in_action)
         view_menu.addAction(zoom_out_action)
         view_menu.addAction(fit_action)
+        view_menu.addSeparator()
+        view_menu.addAction(self.layers_dock.toggleViewAction())
 
         toolbar = self.addToolBar("Main")
         toolbar.addAction(open_action)
@@ -271,6 +292,16 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
         return sidebar
+
+    def _build_layers_dock(self) -> None:
+        """The Layers panel, in a dock of its own -- shown or hidden from the
+        View menu, and movable or floatable like any dock."""
+        self.layers_panel = LayersPanel(self.document)
+        self.layers_dock = QDockWidget("Layers", self)
+        self.layers_dock.setObjectName("layers_dock")
+        self.layers_dock.setWidget(self.layers_panel)
+        self.layers_dock.toggleViewAction().setToolTip("Show or hide the Layers panel")
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
 
     def _build_vectorization_group(self) -> QGroupBox:
         group = QGroupBox("Vectorization Settings")
@@ -349,9 +380,8 @@ class MainWindow(QMainWindow):
             self.load_image(path)
 
     def load_image(self, path: str) -> None:
-        """Start over on a new image: the document gets an "Image" layer
-        with it and an empty "AutoTrace" layer above, in place of whatever
-        it had."""
+        """Start over on a new image: the document's layers become "Image"
+        and "Drawing" (current), and its history starts empty."""
         try:
             image = RasterImage.open(path)
         except Exception as exc:  # noqa: BLE001
@@ -360,10 +390,14 @@ class MainWindow(QMainWindow):
 
         self._generation += 1  # a trace still running for the old image is stale now
         self.image, self.auto_trace = image, VectorDrawing()
-        for layer in list(self.document.layers):
-            self.document.layers.remove(layer)
-        self.document.layers.append(Layer("Image", [image]))
-        self.document.layers.append(Layer("AutoTrace", [self.auto_trace]))
+        layers = self.document.layers
+        for layer in list(layers):
+            layers.remove(layer)
+        layers.append(Layer("Image", [image]))
+        layers.append(Layer("AutoTrace", [self.auto_trace]))
+        layers.append(drawing_layer := Layer("Drawing", [VectorDrawing()]))
+        self.document.current_layer = drawing_layer
+        self.document.history.clear()
 
         self.canvas.fit()
         self.canvas.setFocus()

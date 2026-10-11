@@ -1,12 +1,13 @@
 """The document model: a Document holds layers, a Layer holds items, and an
 item is a RasterImage or a VectorDrawing (of Points, Lines -- straight, or
-BezierCurves -- and Polygons).
+BezierCurves -- and Polygons). The Document also keeps its current layer,
+its undo History of Commands.
 
 Qt-free. Everything that shows or acts on the document subscribes to the
 signals of its parts rather than being told to refresh.
 """
 
-from .document import Document, Item, Layer
+from .document import Document, InsertLayer, Item, Layer, MoveLayer, RemoveLayer, RenameLayer
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .vector import BezierCurve, Element, Fragment, Line, Point, Polygon, VectorDrawing
@@ -16,12 +17,16 @@ __all__ = [
     "Document",
     "Element",
     "Fragment",
+    "InsertLayer",
     "Item",
     "Layer",
     "Line",
+    "MoveLayer",
     "ObservableList",
     "Point",
     "Polygon",
     "RasterImage",
+    "RemoveLayer",
+    "RenameLayer",
     "VectorDrawing",
 ]
