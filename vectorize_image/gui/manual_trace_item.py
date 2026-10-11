@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 from ..manual_trace import ManualTraceModel, closed_loop_shapes
 from ..selection import Selection
 from ..typedefs import Bezier, Contour, Handle
+from .document_items import bezier_path
 
 LINE_COLOR = QColor(0, 230, 118)  # matches the auto-trace wireframe's line color
 DANGLING_COLOR = QColor(255, 87, 34)
@@ -191,17 +192,3 @@ def handle_position(model: ManualTraceModel, handle: Handle) -> np.ndarray | Non
         return model.get_handle_position(handle)
     except (KeyError, IndexError):
         return None
-
-
-def bezier_path(beziers: list[Bezier], closed: bool) -> QPainterPath:
-    path = QPainterPath()
-    if not beziers:
-        return path
-    p0 = beziers[0][0]
-    path.moveTo(float(p0[0]), float(p0[1]))
-    for bezier in beziers:
-        p1, p2, p3 = bezier[1], bezier[2], bezier[3]
-        path.cubicTo(float(p1[0]), float(p1[1]), float(p2[0]), float(p2[1]), float(p3[0]), float(p3[1]))
-    if closed:
-        path.closeSubpath()
-    return path

@@ -15,7 +15,8 @@ from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPath
 
 from ..manual_trace import ManualTraceModel
 from ..typedefs import Bezier, PointLike, SelectionItem, SelectionMode
-from .manual_trace_item import LINE_WIDTH_PX, bezier_path, handle_position
+from .document_items import bezier_path
+from .manual_trace_item import LINE_WIDTH_PX, handle_position
 
 PREVIEW_COLOR = QColor(255, 214, 0)
 SNAP_HIGHLIGHT_COLOR = QColor(0, 229, 255)

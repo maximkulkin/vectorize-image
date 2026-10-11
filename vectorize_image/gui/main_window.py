@@ -1,12 +1,22 @@
 """Main window: the Canvas showing the Document, tool and settings UI around
-it, and the automatic-tracing pipeline that feeds the document."""
+it, and the automatic-tracing pipeline that feeds the document.
+
+Opening an image makes a fresh pair of layers: "Image", holding the
+picture, and "AutoTrace" above it, holding a vector drawing the automatic
+pipeline fills in. The document is the source of truth: the canvas draws
+it, and Save exports what's in it.
+
+Pen and Edit are parked -- their buttons are shown but disabled, as are
+Undo, Redo and Delete -- until they're rebuilt on the document's vector
+drawings (see tools.py).
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import TypedDict
 
-from PySide6.QtCore import Qt, QTimer, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,18 +35,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import binarize, simplify, svgwrite, tracing
-from ..document import Document
-from ..manual_trace import closed_loop_shapes
+from .. import svgwrite
+from ..document import Document, Layer, RasterImage, VectorDrawing
 from ..typedefs import Shape
 from .canvas import Canvas
+from .document_items import VectorStyle
 from .themed_icons import themed_icon
-from .tools import PAINT_SELECT_DEFAULT_RADIUS_PX, AutoTool, EditTool, Tool, TraceTool
+from .tools import AutoTool, Tool
 from .widgets import SliderSpinRow
 from .worker import VectorizeParams, VectorizeTask, WorkerSignals
 
 DEBOUNCE_MS = 150
-MANUAL_EDGE_SIMPLIFY_TOLERANCE = 1.0
+PARKED_TOOL_TIP = " (unavailable while it's rebuilt on the new document model)"
 
 
 class DefaultSettings(TypedDict):
@@ -87,23 +97,7 @@ class MainWindow(QMainWindow):
     trace_tool_action: QAction
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
-    points_mode_action: QAction
-    curves_mode_action: QAction
-    contours_mode_action: QAction
-    _selection_mode_actions: tuple[QAction, ...]
-    _selection_action_group: QActionGroup
-    move_select_action: QAction
-    box_select_action: QAction
-    paint_select_action: QAction
-    _select_tool_actions: tuple[QAction, ...]
-    _select_tool_action_group: QActionGroup
-    _selection_toolbar_separator: QAction
-    _select_toolbar_separator: QAction
     canvas: Canvas
-    manual_group: QGroupBox
-    manual_hint_label: QLabel
-    paint_radius_widget: QWidget
-    paint_radius_row: SliderSpinRow
     auto_threshold_checkbox: QCheckBox
     threshold_row: SliderSpinRow
     invert_checkbox: QCheckBox
@@ -117,8 +111,6 @@ class MainWindow(QMainWindow):
     wireframe_checkbox: QCheckBox
     # Tools, created by _build_tools.
     auto_tool: AutoTool
-    trace_tool: TraceTool
-    edit_tool: EditTool
     tool: Tool  # the active one
 
     def __init__(self) -> None:
@@ -129,11 +121,12 @@ class MainWindow(QMainWindow):
         self._generation: int = 0
         self._overlay_color: QColor = QColor(DEFAULTS["overlay_color"])
 
-        # The model. The canvas and tools subscribe to its signals; so does
-        # the window, to keep its actions and status bar in sync.
+        # The model, which the canvas draws. `image` and `auto_trace` are
+        # the parts of it this window made and fills in: the opened image,
+        # and the drawing the automatic pipeline's result goes into.
         self.document: Document = Document()
-        self.document.drawing.changed.connect(self._on_drawing_changed)
-        self.document.selection.changed.connect(self._on_selection_changed)
+        self.image: RasterImage | None = None
+        self.auto_trace: VectorDrawing | None = None
 
         self.threadpool: QThreadPool = QThreadPool.globalInstance()
         self.signals: WorkerSignals = WorkerSignals()
@@ -147,6 +140,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_tools()
         self._update_settings_enabled()
+        self._apply_vector_style()
 
     # ---------------------------------------------------------------- UI
 
@@ -173,20 +167,18 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(False)
         self.save_action.triggered.connect(self._save_svg)
 
+        # Parked along with Pen and Edit, the only tools that edit by hand.
         self.undo_action = QAction(themed_icon("undo"), "&Undo", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.setEnabled(False)
-        self.undo_action.triggered.connect(self._undo)
 
         self.redo_action = QAction(themed_icon("redo"), "&Redo", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setEnabled(False)
-        self.redo_action.triggered.connect(self._redo)
 
         self.delete_action = QAction("&Delete Selection", self)
         self.delete_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Delete), QKeySequence(Qt.Key.Key_Backspace)])
         self.delete_action.setEnabled(False)
-        self.delete_action.triggered.connect(self._delete_selection)
 
         self.auto_tool_action = QAction(themed_icon("autotrace"), "&AutoTrace", self)
         self.auto_tool_action.setCheckable(True)
@@ -194,69 +186,18 @@ class MainWindow(QMainWindow):
         self.auto_tool_action.setToolTip("AutoTrace: trace the whole image automatically")
         self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
-        self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge")
+        self.trace_tool_action.setEnabled(False)
+        self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge" + PARKED_TOOL_TIP)
         self.edit_tool_action = QAction(themed_icon("edit"), "&Edit", self)
         self.edit_tool_action.setCheckable(True)
-        self.edit_tool_action.setToolTip("Edit: select and move or delete points, curves, or contours")
+        self.edit_tool_action.setEnabled(False)
+        self.edit_tool_action.setToolTip("Edit: select and move or delete points, curves, or contours" + PARKED_TOOL_TIP)
 
         self._tool_action_group = QActionGroup(self)
         self._tool_action_group.setExclusive(True)
         for action in (self.auto_tool_action, self.trace_tool_action, self.edit_tool_action):
             self._tool_action_group.addAction(action)
         _when_checked(self.auto_tool_action, lambda: self._set_tool(self.auto_tool))
-        _when_checked(self.trace_tool_action, lambda: self._set_tool(self.trace_tool))
-        _when_checked(self.edit_tool_action, lambda: self._set_tool(self.edit_tool))
-
-        self.points_mode_action = QAction(themed_icon("edit_points"), "Edit &points", self)
-        self.points_mode_action.setCheckable(True)
-        self.points_mode_action.setChecked(True)
-        self.points_mode_action.setShortcut(QKeySequence(Qt.Key.Key_1))
-        self.points_mode_action.setToolTip("Edit points (1)")
-        self.curves_mode_action = QAction(themed_icon("edit_lines"), "Edit &lines", self)
-        self.curves_mode_action.setCheckable(True)
-        self.curves_mode_action.setShortcut(QKeySequence(Qt.Key.Key_2))
-        self.curves_mode_action.setToolTip("Edit lines (2)")
-        self.contours_mode_action = QAction(themed_icon("edit_polygons"), "Edit p&olygons", self)
-        self.contours_mode_action.setCheckable(True)
-        self.contours_mode_action.setShortcut(QKeySequence(Qt.Key.Key_3))
-        self.contours_mode_action.setToolTip("Edit polygons (3)")
-
-        self._selection_mode_actions = (
-            self.points_mode_action,
-            self.curves_mode_action,
-            self.contours_mode_action,
-        )
-        self._selection_action_group = QActionGroup(self)
-        self._selection_action_group.setExclusive(True)
-        for action in self._selection_mode_actions:
-            self._selection_action_group.addAction(action)
-        _when_checked(self.points_mode_action, lambda: self.document.selection.set_mode("points"))
-        _when_checked(self.curves_mode_action, lambda: self.document.selection.set_mode("curves"))
-        _when_checked(self.contours_mode_action, lambda: self.document.selection.set_mode("contours"))
-
-        self.move_select_action = QAction(themed_icon("move"), "&Move", self)
-        self.move_select_action.setCheckable(True)
-        self.move_select_action.setChecked(True)
-        self.move_select_action.setToolTip("Move: click to select, drag a selected item to move it")
-        self.box_select_action = QAction(themed_icon("select_box"), "&Box Select", self)
-        self.box_select_action.setCheckable(True)
-        self.box_select_action.setToolTip("Box Select: drag a rectangle to select anything it touches")
-        self.paint_select_action = QAction(themed_icon("select_paint"), "&Paint Select", self)
-        self.paint_select_action.setCheckable(True)
-        self.paint_select_action.setToolTip("Paint Select: hold and drag a brush circle to select anything it touches")
-
-        self._select_tool_actions = (
-            self.move_select_action,
-            self.box_select_action,
-            self.paint_select_action,
-        )
-        self._select_tool_action_group = QActionGroup(self)
-        self._select_tool_action_group.setExclusive(True)
-        for action in self._select_tool_actions:
-            self._select_tool_action_group.addAction(action)
-        _when_checked(self.move_select_action, lambda: self._set_select_tool("move"))
-        _when_checked(self.box_select_action, lambda: self._set_select_tool("box"))
-        _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint"))
 
         fit_action = QAction(themed_icon("fit"), "&Fit to Window", self)
         fit_action.setShortcut("Ctrl+0")
@@ -311,17 +252,9 @@ class MainWindow(QMainWindow):
         tools_toolbar.addAction(self.auto_tool_action)
         tools_toolbar.addAction(self.trace_tool_action)
         tools_toolbar.addAction(self.edit_tool_action)
-        self._selection_toolbar_separator = tools_toolbar.addSeparator()
-        for action in self._selection_mode_actions:
-            tools_toolbar.addAction(action)
-        self._select_toolbar_separator = tools_toolbar.addSeparator()
-        for action in self._select_tool_actions:
-            tools_toolbar.addAction(action)
-        self._set_selection_actions_visible(False)
 
     def _build_canvas(self) -> QWidget:
         self.canvas = Canvas(self.document)
-        self.canvas.set_fill_style(self._overlay_color, DEFAULTS["opacity"] / 100.0)
         return self.canvas
 
     def _build_sidebar(self) -> QWidget:
@@ -329,7 +262,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(sidebar)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        layout.addWidget(self._build_manual_group())
         layout.addWidget(self._build_vectorization_group())
         layout.addWidget(self._build_display_group())
 
@@ -339,30 +271,6 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
         return sidebar
-
-    def _build_manual_group(self) -> QGroupBox:
-        self.manual_group = QGroupBox("Manual Trace")
-        layout = QVBoxLayout(self.manual_group)
-
-        self.manual_hint_label = QLabel()
-        self.manual_hint_label.setWordWrap(True)
-        layout.addWidget(self.manual_hint_label)
-
-        self.paint_radius_widget = QWidget()
-        paint_form = QFormLayout(self.paint_radius_widget)
-        paint_form.setContentsMargins(0, 0, 0, 0)
-        self.paint_radius_row = SliderSpinRow(5.0, 150.0, PAINT_SELECT_DEFAULT_RADIUS_PX, decimals=0, step=1)
-        self.paint_radius_row.valueChanged.connect(self._on_paint_radius_changed)
-        paint_form.addRow("Brush radius (px)", self.paint_radius_row)
-        layout.addWidget(self.paint_radius_widget)
-        self.paint_radius_widget.setVisible(False)
-
-        clear_button = QPushButton("Clear Manual Trace")
-        clear_button.clicked.connect(self._clear_manual_trace)
-        layout.addWidget(clear_button)
-
-        self.manual_group.setVisible(False)
-        return self.manual_group
 
     def _build_vectorization_group(self) -> QGroupBox:
         group = QGroupBox("Vectorization Settings")
@@ -441,45 +349,58 @@ class MainWindow(QMainWindow):
             self.load_image(path)
 
     def load_image(self, path: str) -> None:
+        """Start over on a new image: the document gets an "Image" layer
+        with it and an empty "AutoTrace" layer above, in place of whatever
+        it had."""
         try:
-            self.document.load_image(path)  # the canvas shows it and fits it to the view
+            image = RasterImage.open(path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Could not open image", f"Failed to load:\n{path}\n\n{exc}")
             return
 
+        self._generation += 1  # a trace still running for the old image is stale now
+        self.image, self.auto_trace = image, VectorDrawing()
+        for layer in list(self.document.layers):
+            self.document.layers.remove(layer)
+        self.document.layers.append(Layer("Image", [image]))
+        self.document.layers.append(Layer("AutoTrace", [self.auto_trace]))
+
+        self.canvas.fit()
         self.canvas.setFocus()
         self.setWindowTitle(f"Vectorize Image — {path}")
         self._update_save_enabled()
         # Automatic tracing doesn't run on its own -- it can be slow on a
-        # large image, and many sessions go straight to Pen/Edit
-        # without ever needing it. It starts as soon as a setting changes
-        # (via the debounce) or the AutoTrace tool is (re-)selected. Trace
-        # and Edit still need a fresh edge source to snap to, though --
-        # that's a cheap bitmap trace, not the full curve-fitting pipeline.
-        if not self.tool.edits_drawing:
-            self.statusBar().showMessage("Image loaded. Adjust a setting to trace it, or switch tools.")
-        else:
-            self._refresh_manual_edge_source()
+        # large image. It starts as soon as a setting changes (via the
+        # debounce) or the AutoTrace tool is (re-)selected.
+        self.statusBar().showMessage("Image loaded. Adjust a setting to trace it.")
+
+    def _exported_drawings(self) -> list[VectorDrawing]:
+        """Every vector drawing in a visible layer, bottom to top -- what's saved."""
+        return [
+            item
+            for layer in self.document.layers
+            if layer.visible
+            for item in layer.items
+            if isinstance(item, VectorDrawing)
+        ]
+
+    def _export_shapes(self) -> list[Shape]:
+        return [shape for drawing in self._exported_drawings() for shape in drawing.shapes()]
 
     def _save_svg(self) -> None:
-        svg = self._manual_trace_svg() if self.tool.edits_drawing else self.document.auto_svg
-        if not svg:
+        shapes = self._export_shapes()
+        if not shapes or self.image is None:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Save Vector as SVG", "", "SVG files (*.svg)")
         if not path:
             return
+        width, height = self.image.size
+        svg = svgwrite.build_svg(shapes, width, height, fill=self._overlay_color.name(), precision=2)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(svg)
         except OSError as exc:
             QMessageBox.warning(self, "Could not save SVG", str(exc))
-
-    def _manual_trace_svg(self) -> str | None:
-        shapes = closed_loop_shapes(self.document.drawing.closed_loops())
-        if not shapes:
-            return None
-        width, height = self.document.image_size
-        return svgwrite.build_svg(shapes, width, height, fill=self._overlay_color.name(), precision=2)
 
     def _reset_defaults(self) -> None:
         self.auto_threshold_checkbox.setChecked(DEFAULTS["auto_threshold"])
@@ -493,6 +414,7 @@ class MainWindow(QMainWindow):
         self._update_color_button()
         self.opacity_slider.setValue(DEFAULTS["opacity"])
         self.wireframe_checkbox.setChecked(DEFAULTS["show_wireframe"])
+        self._apply_vector_style()
         self._on_param_changed()
 
     def _pick_color(self) -> None:
@@ -500,8 +422,7 @@ class MainWindow(QMainWindow):
         if color.isValid():
             self._overlay_color = color
             self._update_color_button()
-            self.canvas.set_fill_style(self._overlay_color, self.opacity_slider.value() / 100.0)
-            self._on_param_changed()
+            self._apply_vector_style()
 
     def _update_color_button(self) -> None:
         name = self._overlay_color.name()
@@ -516,24 +437,27 @@ class MainWindow(QMainWindow):
         self.threshold_row.setEnabled(not self.auto_threshold_checkbox.isChecked())
 
     def _on_opacity_changed(self, value: int) -> None:
-        self.canvas.set_fill_style(self._overlay_color, value / 100.0)
         self.opacity_label.setText(f"{value}%")
+        self._apply_vector_style()
 
-    def _on_paint_radius_changed(self, value: float) -> None:
-        self.edit_tool.paint_tool.set_radius(value)
+    def _on_wireframe_toggled(self, _checked: bool) -> None:
+        self._apply_vector_style()
 
-    def _on_wireframe_toggled(self, checked: bool) -> None:
-        self.auto_tool.set_show_wireframe(checked)
+    def _apply_vector_style(self) -> None:
+        show_wireframe = self.wireframe_checkbox.isChecked()
+        self.canvas.set_vector_style(
+            VectorStyle(
+                fill_color=self._overlay_color,
+                fill_opacity=self.opacity_slider.value() / 100.0,
+                show_lines=show_wireframe,
+                show_points=show_wireframe,
+            )
+        )
 
     # ------------------------------------------------------------- tools
 
     def _build_tools(self) -> None:
-        self.auto_tool = AutoTool(self.canvas, DEFAULTS["show_wireframe"])
-        self.trace_tool = TraceTool(self.document, self.canvas)
-        self.edit_tool = EditTool(self.document, self.canvas)
-        self.edit_tool.paint_tool.set_radius(self.paint_radius_row.value())
-        for tool in (self.auto_tool, self.trace_tool, self.edit_tool):
-            tool.status_changed.connect(self._update_manual_status)
+        self.auto_tool = AutoTool(self.canvas)
         self.tool = self.auto_tool
         self.tool.activate()
 
@@ -542,130 +466,20 @@ class MainWindow(QMainWindow):
             return
         self.tool.deactivate()
         self.tool = tool
-
-        self._set_selection_actions_visible(tool is self.edit_tool)
-        self.manual_group.setVisible(tool.edits_drawing)
-        self._set_auto_settings_enabled(not tool.edits_drawing)
-        if tool.edits_drawing:
-            self.manual_hint_label.setText(tool.hint)
-            self._seed_manual_model_if_empty()
-            if self.document.gray is not None:
-                self._refresh_manual_edge_source()
-
         tool.activate()
         self.canvas.set_interaction_handler(tool if tool.captures_mouse else None)
-
-        if not tool.edits_drawing and self.document.gray is not None:
+        if tool is self.auto_tool:
             self._run_vectorize()
-        self._update_paint_radius_visibility()
-        self._update_save_enabled()
-        self._update_undo_redo_actions()
-        self._update_delete_action()
-        self._update_manual_status()
-
-    def _seed_manual_model_if_empty(self) -> None:
-        """The first time Trace or Edit is used, start from whatever the
-        automatic pipeline last produced (this is the point of Edit: fixing
-        up a curve that didn't come out quite right) rather than blank --
-        but only if nothing's been manually drawn yet, so switching tools
-        back and forth doesn't clobber the user's own work.
-        """
-        if not self.document.drawing.nodes and self.document.auto_shapes:
-            self.document.drawing.load_shapes(self.document.auto_shapes)
-
-    def _set_auto_settings_enabled(self, enabled: bool) -> None:
-        for widget in (self.simplify_row, self.corner_row, self.max_error_row, self.min_area_row, self.wireframe_checkbox):
-            widget.setEnabled(enabled)
-
-    def _set_selection_actions_visible(self, visible: bool) -> None:
-        self._selection_toolbar_separator.setVisible(visible)
-        for action in self._selection_mode_actions:
-            action.setVisible(visible)
-        self._select_toolbar_separator.setVisible(visible)
-        for action in self._select_tool_actions:
-            action.setVisible(visible)
-
-    def _set_select_tool(self, name: str) -> None:
-        self.edit_tool.set_select_tool(name)
-        self._update_paint_radius_visibility()
-
-    def _update_paint_radius_visibility(self) -> None:
-        self.paint_radius_widget.setVisible(
-            self.tool is self.edit_tool and self.edit_tool.select_tool is self.edit_tool.paint_tool
-        )
-
-    def _clear_manual_trace(self) -> None:
-        self.document.selection.clear()
-        self.document.drawing.clear()
-
-    # ----------------------------------------------------- model reactions
-
-    def _on_drawing_changed(self) -> None:
-        self._update_save_enabled()
-        self._update_undo_redo_actions()
-        self._update_manual_status()
-
-    def _on_selection_changed(self) -> None:
-        self._update_delete_action()
-        self._update_manual_status()
-
-    def _update_delete_action(self) -> None:
-        self.delete_action.setEnabled(self.tool.can_delete())
-
-    def _delete_selection(self) -> None:
-        self.tool.delete_selection()
-
-    # --------------------------------------------------------- undo/redo
-
-    def _undo(self) -> None:
-        self.document.drawing.undo()
-
-    def _redo(self) -> None:
-        self.document.drawing.redo()
-
-    def _update_undo_redo_actions(self) -> None:
-        in_manual_tool = self.tool.edits_drawing
-        self.undo_action.setEnabled(in_manual_tool and self.document.drawing.can_undo())
-        self.redo_action.setEnabled(in_manual_tool and self.document.drawing.can_redo())
 
     def _update_save_enabled(self) -> None:
-        if self.tool.edits_drawing:
-            self.save_action.setEnabled(bool(self.document.drawing.closed_loops()))
-        else:
-            self.save_action.setEnabled(bool(self.document.auto_svg))
-
-    def _update_manual_status(self) -> None:
-        if not self.tool.edits_drawing:
-            return  # the status bar belongs to the automatic pipeline's progress/results
-        closed = len(self.document.drawing.closed_loops())
-        open_chains = len(self.document.drawing.open_chains())
-        hint = self.tool.status_hint()
-        self.statusBar().showMessage(f"{closed} closed loop(s), {open_chains} open chain(s) · {hint}")
-
-    def _refresh_manual_edge_source(self) -> None:
-        if self.document.gray is None:
-            return
-        threshold = None if self.auto_threshold_checkbox.isChecked() else self.threshold_row.value()
-        if threshold is None:
-            threshold = binarize.otsu_threshold(self.document.gray)
-            self.threshold_row.setValue(threshold)
-        bitmap = binarize.binarize(self.document.gray, threshold=threshold, invert=self.invert_checkbox.isChecked())
-        # Lightly simplified, not raw crack-traced points: the raw boundary
-        # can have single-pixel rasterization "spikes" right at a corner
-        # (an artifact of how a sharp vertex rounds to the pixel grid), and
-        # since a fitted segment's tangent is estimated from just the one
-        # point adjacent to its endpoint, an unsimplified spike there is
-        # enough to send the whole curve in a wildly wrong direction.
-        contours = [
-            simplify.simplify_closed_polygon(c, MANUAL_EDGE_SIMPLIFY_TOLERANCE)
-            for c in tracing.trace_bitmap(bitmap)
-        ]
-        self.document.drawing.set_edge_source(contours)
+        self.save_action.setEnabled(
+            self.image is not None and any(drawing.polygons for drawing in self._exported_drawings())
+        )
 
     # --------------------------------------------------------- vectorize
 
     def _on_param_changed(self, *_args: object) -> None:
-        if self.document.gray is None:
+        if self.image is None:
             return
         self._debounce.start(DEBOUNCE_MS)
 
@@ -677,37 +491,34 @@ class MainWindow(QMainWindow):
             "corner_threshold": self.corner_row.value(),
             "max_error": self.max_error_row.value(),
             "min_area": self.min_area_row.value(),
-            "fill": self._overlay_color.name(),
         }
 
     def _run_vectorize(self) -> None:
-        if self.document.gray is None:
-            return
-        if self.tool.edits_drawing:
-            self._refresh_manual_edge_source()
+        if self.image is None:
             return
         self._generation += 1
         generation = self._generation
         params = self._collect_params()
         self.statusBar().showMessage("Vectorizing…")
-        task = VectorizeTask(generation, self.document.gray, params, self.signals)
+        task = VectorizeTask(generation, self.image.grayscale, params, self.signals)
         self.threadpool.start(task)
 
     def _on_vectorize_finished(
-        self, generation: int, svg: str, shapes: list[Shape], threshold_used: float, elapsed_ms: float
+        self, generation: int, shapes: list[Shape], threshold_used: float, elapsed_ms: float
     ) -> None:
-        if generation != self._generation:
-            return  # a newer request superseded this one; drop the stale result
+        if generation != self._generation or self.auto_trace is None:
+            return  # a newer request (or a newer image) superseded this one; drop the stale result
 
-        self.document.set_auto_trace(svg, shapes)  # the canvas renders it
+        # Replace the drawing's contents with the new result; the canvas redraws it.
+        self.auto_trace.remove(list(self.auto_trace.points))
+        polygons = self.auto_trace.add_shapes(shapes)
         self._update_save_enabled()
 
         if self.auto_threshold_checkbox.isChecked():
             self.threshold_row.setValue(threshold_used)
 
-        shape_count = svg.count("<path")
         self.statusBar().showMessage(
-            f"{shape_count} shape(s) · threshold {threshold_used:.0f} · {elapsed_ms:.0f} ms"
+            f"{len(polygons)} shape(s) · threshold {threshold_used:.0f} · {elapsed_ms:.0f} ms"
         )
 
     def _on_vectorize_failed(self, generation: int, message: str) -> None:

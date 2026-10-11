@@ -8,7 +8,7 @@ from typing import ClassVar, TypedDict, override
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from .. import binarize, pipeline, svgwrite
+from .. import binarize, pipeline
 
 
 class VectorizeParams(TypedDict):
@@ -18,7 +18,6 @@ class VectorizeParams(TypedDict):
     corner_threshold: float
     max_error: float
     min_area: float
-    fill: str
 
 
 class WorkerSignals(QObject):
@@ -26,13 +25,13 @@ class WorkerSignals(QObject):
     so connections stay valid regardless of when a background task finishes.
     """
 
-    # generation, svg, shapes (list[Shape], see pipeline.vectorize_bitmap), threshold_used, elapsed_ms
-    finished: ClassVar[Signal] = Signal(int, str, object, float, float)
+    # generation, shapes (list[Shape], see pipeline.vectorize_bitmap), threshold_used, elapsed_ms
+    finished: ClassVar[Signal] = Signal(int, object, float, float)
     failed: ClassVar[Signal] = Signal(int, str)  # generation, error message
 
 
 class VectorizeTask(QRunnable):
-    """Runs one full binarize -> trace -> fit -> SVG pass off the main thread.
+    """Runs one full binarize -> trace -> fit pass off the main thread.
 
     Tagged with a generation number so the caller can ignore stale results
     that finish after a newer request has already been submitted (rather
@@ -56,8 +55,6 @@ class VectorizeTask(QRunnable):
                 threshold = binarize.otsu_threshold(self.gray)
 
             bitmap = binarize.binarize(self.gray, threshold=threshold, invert=params["invert"])
-            height, width = bitmap.shape
-
             shapes = pipeline.vectorize_bitmap(
                 bitmap,
                 simplify_tolerance=params["simplify_tolerance"],
@@ -65,10 +62,9 @@ class VectorizeTask(QRunnable):
                 max_error=params["max_error"],
                 min_area=params["min_area"],
             )
-            svg = svgwrite.build_svg(shapes, width, height, fill=params["fill"], precision=2)
         except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
             self.signals.failed.emit(self.generation, str(exc))
             return
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        self.signals.finished.emit(self.generation, svg, shapes, float(threshold), elapsed_ms)
+        self.signals.finished.emit(self.generation, shapes, float(threshold), elapsed_ms)

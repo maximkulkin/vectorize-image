@@ -7,7 +7,12 @@ Canvas via add_overlay/remove_overlay, and while it's active it's the
 canvas's interaction handler (which calls its on_move/on_press/on_release/
 on_escape directly).
 
-Tools change the Document's models (its drawing and selection) and leave it
+Pen and Edit (TraceTool, EditTool and its select tools) are parked: they
+still work on a ManualTraceModel and Selection rather than the Document,
+and the main window keeps them disabled until they're rebuilt on the
+document's vector drawings.
+
+Tools change the models (a drawing and its selection) and leave it
 at that: the canvas and the main window listen to the models' signals and
 update themselves. Tools also *react* to model signals -- e.g. the Move tool drops
 a drag in progress if something else (an undo, a delete) changes the drawing
@@ -17,14 +22,13 @@ so only the active tool reacts.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from typing import ClassVar, assert_never, override
 
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsItem
 
-from ..document import Document
 from ..manual_trace import ManualTraceModel
 from ..selection import Selection
 from ..signals import Signal, disconnect
@@ -137,33 +141,11 @@ class Tool:
 
 
 class AutoTool(Tool):
-    """AutoTrace: automatic tracing. No canvas interaction; it just shows the
-    automatic result's layers. (Running the pipeline itself is driven by
-    the settings sidebar, in MainWindow.)"""
+    """AutoTrace: automatic tracing. No canvas interaction: the pipeline is
+    driven by the settings sidebar, in MainWindow, and its result is a
+    drawing in the document like any other."""
 
     name: ClassVar[str] = "auto"
-
-    def __init__(self, canvas: Canvas, show_wireframe: bool) -> None:
-        super().__init__(canvas)
-        self._show_wireframe: bool = show_wireframe
-        self._active: bool = False
-
-    @override
-    def activate(self) -> None:
-        self._active = True
-        self.canvas.set_auto_trace_visible(True)
-        self.canvas.set_wireframe_visible(self._show_wireframe)
-
-    @override
-    def deactivate(self) -> None:
-        self._active = False
-        self.canvas.set_auto_trace_visible(False)
-        self.canvas.set_wireframe_visible(False)
-
-    def set_show_wireframe(self, show: bool) -> None:
-        self._show_wireframe = show
-        if self._active:
-            self.canvas.set_wireframe_visible(show)
 
 
 # ----------------------------------------------------------------- trace
@@ -178,9 +160,9 @@ class TraceTool(Tool):
     edits_drawing: ClassVar[bool] = True
     captures_mouse: ClassVar[bool] = True
 
-    def __init__(self, document: Document, canvas: Canvas) -> None:
+    def __init__(self, model: ManualTraceModel, canvas: Canvas) -> None:
         super().__init__(canvas)
-        self._model: ManualTraceModel = document.drawing
+        self._model: ManualTraceModel = model
         self.preview_bezier: Bezier | None = None
         # A dangling node the cursor is close enough to that clicking now
         # would connect to (or resume) it rather than make a new point.
@@ -190,7 +172,6 @@ class TraceTool(Tool):
 
     @override
     def activate(self) -> None:
-        self.canvas.set_drawing_visible(True)
         self._add_overlays((self._curve, self._snap_ring))
         self._model.changed.connect(self._on_model_changed)
 
@@ -199,7 +180,6 @@ class TraceTool(Tool):
         disconnect(self._model.changed, self._on_model_changed)
         self._set_preview(None, None)
         self._remove_overlays((self._curve, self._snap_ring))
-        self.canvas.set_drawing_visible(False)
 
     def _on_model_changed(self) -> None:
         # Whatever changed (a commit, an undo, a clear), the preview was
@@ -263,10 +243,10 @@ class SelectTool(Tool):
     """One of the Edit tool's interchangeable ways of selecting (and, for
     Move, dragging) -- see EditTool."""
 
-    def __init__(self, document: Document, canvas: Canvas) -> None:
+    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
         super().__init__(canvas)
-        self._model: ManualTraceModel = document.drawing
-        self._selection: Selection = document.selection
+        self._model: ManualTraceModel = model
+        self._selection: Selection = selection
 
     @override
     def activate(self) -> None:
@@ -291,8 +271,8 @@ class MoveSelectTool(SelectTool):
 
     name: ClassVar[str] = "move"
 
-    def __init__(self, document: Document, canvas: Canvas) -> None:
-        super().__init__(document, canvas)
+    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
+        super().__init__(model, selection, canvas)
         self._drag_origin: tuple[float, float] | None = None  # press position, for computing a drag's delta
         self._drag_checkpointed: bool = False  # lazy: only checkpoint once actual movement happens
         self._own_change: bool = False
@@ -427,8 +407,8 @@ class BoxSelectTool(SelectTool):
 
     name: ClassVar[str] = "box"
 
-    def __init__(self, document: Document, canvas: Canvas) -> None:
-        super().__init__(document, canvas)
+    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
+        super().__init__(model, selection, canvas)
         self._origin: tuple[float, float] | None = None
         self._shift: bool = False
         self._outline: BoxOutline = BoxOutline()
@@ -498,8 +478,8 @@ class PaintSelectTool(SelectTool):
 
     name: ClassVar[str] = "paint"
 
-    def __init__(self, document: Document, canvas: Canvas) -> None:
-        super().__init__(document, canvas)
+    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
+        super().__init__(model, selection, canvas)
         self.radius_px: float = PAINT_SELECT_DEFAULT_RADIUS_PX  # on screen, independent of zoom
         self._painting: bool = False
         self._press_selection: frozenset[SelectionItem] | None = None  # what Escape reverts to
@@ -583,13 +563,13 @@ class EditTool(Tool):
     edits_drawing: ClassVar[bool] = True
     captures_mouse: ClassVar[bool] = True
 
-    def __init__(self, document: Document, canvas: Canvas) -> None:
+    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
         super().__init__(canvas)
-        self._model: ManualTraceModel = document.drawing
-        self._selection: Selection = document.selection
-        self.move_tool: MoveSelectTool = MoveSelectTool(document, canvas)
-        self.box_tool: BoxSelectTool = BoxSelectTool(document, canvas)
-        self.paint_tool: PaintSelectTool = PaintSelectTool(document, canvas)
+        self._model: ManualTraceModel = model
+        self._selection: Selection = selection
+        self.move_tool: MoveSelectTool = MoveSelectTool(model, selection, canvas)
+        self.box_tool: BoxSelectTool = BoxSelectTool(model, selection, canvas)
+        self.paint_tool: PaintSelectTool = PaintSelectTool(model, selection, canvas)
         self._select_tools: dict[str, SelectTool] = {
             t.name: t for t in (self.move_tool, self.box_tool, self.paint_tool)
         }
@@ -610,8 +590,6 @@ class EditTool(Tool):
     @override
     def activate(self) -> None:
         self._active = True
-        self.canvas.set_drawing_visible(True)
-        self.canvas.set_control_points_visible(True)
         self.select_tool.activate()
 
     @override
@@ -619,8 +597,6 @@ class EditTool(Tool):
         self._active = False
         self.select_tool.deactivate()
         self._selection.clear()
-        self.canvas.set_control_points_visible(False)
-        self.canvas.set_drawing_visible(False)
 
     @override
     def on_move(self, scene_pos: QPointF) -> None:

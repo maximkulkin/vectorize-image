@@ -18,6 +18,8 @@ from conftest import wait_until  # noqa: E402
 from vectorize_image.manual_trace import closed_loop_shapes  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
+pytestmark = pytest.mark.skip(reason="Pen and Edit are parked until they're rebuilt on the new document model")
+
 
 def _click(window: MainWindow, x: float, y: float) -> None:
     vp = window.canvas.mapFromScene(float(x), float(y))

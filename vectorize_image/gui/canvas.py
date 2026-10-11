@@ -1,37 +1,31 @@
 """The canvas: a pan/zoom view that shows a Document.
 
-It owns the scene and a fixed stack of content layers, each kept in sync
-with the document by subscribing to its signals:
+The scene holds two things, bottom to top:
 
-    image       the source image                       (image_changed)
-    auto trace  the automatic result, filled           (auto_trace_changed)
-    wireframe   the automatic result's lines/points    (auto_trace_changed)
-    drawing     the manual drawing and its selection   (drawing.changed, selection.changed)
-    overlays    whatever the active tool adds          (see add_overlay)
+    document    a DocumentItem: the document's layers and their items, as
+                a tree of canvas items that keeps itself in sync with the
+                document (see document_items)
+    overlays    whatever the active tool adds (see add_overlay)
 
-Tools drive it through a small interface -- layer visibility, adding and
-removing their own overlay items, and converting on-screen distances to
-scene units -- rather than reaching into the scene themselves. Layer items
-are attributes for inspection (e.g. by tests), not for tools to modify.
+Tools drive it through a small interface -- adding and removing their own
+overlay items, and converting on-screen distances to scene units -- rather
+than reaching into the scene themselves. `document_item` is an attribute
+for inspection (e.g. by tests), not for tools to modify.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene, QWidget
+from typing import Final
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QWidget
 
 from ..document import Document
-from .manual_trace_item import ManualTraceItem
+from .document_items import DocumentItem, VectorStyle
 from .widgets import ZoomableGraphicsView
-from .wireframe_item import WireframeItem
 
-IMAGE_Z = 0
-AUTO_TRACE_Z = 1
-WIREFRAME_Z = 2
-DRAWING_Z = 3
-OVERLAY_Z = 4
+DOCUMENT_Z: Final = 0
+OVERLAY_Z: Final = 1
 
 
 class Canvas(ZoomableGraphicsView):
@@ -39,81 +33,20 @@ class Canvas(ZoomableGraphicsView):
         scene = QGraphicsScene()
         super().__init__(scene, parent)
         scene.setParent(self)  # lives exactly as long as the canvas
+        # Lines and points are drawn a fixed number of screen pixels wide,
+        # so they reach a little past their items' bounds; repainting the
+        # whole viewport on a change keeps that from leaving trails.
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.document: Document = document
+        self.document_item: DocumentItem = DocumentItem(document)
+        self.document_item.setZValue(DOCUMENT_Z)
+        scene.addItem(self.document_item)
 
-        self.image_item: QGraphicsPixmapItem = QGraphicsPixmapItem()
-        self.vector_item: QGraphicsPixmapItem = QGraphicsPixmapItem()
-        self.wireframe_item: WireframeItem = WireframeItem()
-        self.drawing_item: ManualTraceItem = ManualTraceItem(document.drawing, document.selection)
-        for item, z in (
-            (self.image_item, IMAGE_Z),
-            (self.vector_item, AUTO_TRACE_Z),
-            (self.wireframe_item, WIREFRAME_Z),
-            (self.drawing_item, DRAWING_Z),
-        ):
-            item.setZValue(z)
-            scene.addItem(item)
-        self.wireframe_item.setVisible(False)
-        self.drawing_item.setVisible(False)
+    # -------------------------------------------------------------- style
 
-        document.image_changed.connect(self._on_image_changed)
-        document.auto_trace_changed.connect(self._on_auto_trace_changed)
-        document.drawing.changed.connect(self._on_drawing_changed)
-        document.selection.changed.connect(self._on_drawing_changed)
-
-    # ------------------------------------------------------ document events
-
-    def _on_image_changed(self) -> None:
-        image = self.document.image
-        width, height = self.document.image_size
-        if image is None:
-            self.image_item.setPixmap(QPixmap())
-        else:
-            qimage = QImage(image.tobytes(), width, height, 4 * width, QImage.Format.Format_RGBA8888)
-            self.image_item.setPixmap(QPixmap.fromImage(qimage.copy()))
-        self.drawing_item.set_bounds(width, height)
-        self.scene().setSceneRect(0, 0, width, height)
-        self.fit()
-
-    def _on_auto_trace_changed(self) -> None:
-        svg, shapes = self.document.auto_svg, self.document.auto_shapes
-        width, height = self.document.image_size
-        if svg is None:
-            self.vector_item.setPixmap(QPixmap())
-            self.wireframe_item.set_shapes([], width, height)
-            return
-        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(image)
-        QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(painter, QRectF(0, 0, width, height))
-        painter.end()
-        self.vector_item.setPixmap(QPixmap.fromImage(image))
-        self.wireframe_item.set_shapes(shapes or [], width, height)
-
-    def _on_drawing_changed(self) -> None:
-        self.drawing_item.update()
-
-    # ------------------------------------------------------------- layers
-
-    def set_auto_trace_visible(self, visible: bool) -> None:
-        self.vector_item.setVisible(visible)
-
-    def set_wireframe_visible(self, visible: bool) -> None:
-        self.wireframe_item.setVisible(visible)
-
-    def set_drawing_visible(self, visible: bool) -> None:
-        self.drawing_item.setVisible(visible)
-
-    def set_control_points_visible(self, visible: bool) -> None:
-        """Every segment's control points and handle lines, on the drawing."""
-        self.drawing_item.set_control_points_visible(visible)
-
-    def set_fill_style(self, color: QColor, opacity: float) -> None:
-        """How filled shapes look: the drawing's fill color, and the opacity
-        of both it and the automatic result (whose color is baked into its
-        SVG when it's generated)."""
-        self.vector_item.setOpacity(opacity)
-        self.drawing_item.set_fill_style(color, opacity)
+    def set_vector_style(self, style: VectorStyle) -> None:
+        """How every vector drawing in the document is drawn."""
+        self.document_item.set_vector_style(style)
 
     # ----------------------------------------------------------- overlays
 
@@ -133,5 +66,9 @@ class Canvas(ZoomableGraphicsView):
         return px / (self.transform().m11() or 1.0)
 
     def fit(self) -> None:
-        if not self.scene().sceneRect().isEmpty():
-            self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        """Make the whole document fill the view, and the scrollable area."""
+        rect = self.document_item.content_rect()
+        if rect.isEmpty():
+            return
+        self.setSceneRect(rect)
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)

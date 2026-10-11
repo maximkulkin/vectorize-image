@@ -17,6 +17,8 @@ from conftest import wait_until  # noqa: E402
 from vectorize_image import curve_fit  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
+pytestmark = pytest.mark.skip(reason="Pen and Edit are parked until they're rebuilt on the new document model")
+
 
 type _Pos = tuple[float, float] | np.ndarray
 
