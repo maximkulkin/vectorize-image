@@ -1,7 +1,6 @@
-"""GUI regression tests. Run headless (offscreen) so they work without a display."""
+"""Main window regression tests. Run headless (offscreen) so they work without a display."""
 
 import os
-import time
 from pathlib import Path
 
 import numpy as np
@@ -19,29 +18,36 @@ from PySide6.QtWidgets import QApplication, QGraphicsView  # noqa: E402
 
 from conftest import wait_until  # noqa: E402
 from vectorize_image import svgwrite  # noqa: E402
-from vectorize_image.document import RasterImage, VectorDrawing  # noqa: E402
+from vectorize_image.document import Insert, RasterImage, VectorDrawing  # noqa: E402
+from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
+from vectorize_image.typedefs import Bezier  # noqa: E402
 
 
-def _auto_trace(window: MainWindow) -> VectorDrawing:
-    assert window.auto_trace is not None
-    return window.auto_trace
-
-
-def _traced(window: MainWindow) -> bool:
-    return window.auto_trace is not None and bool(window.auto_trace.polygons)
-
-
-def _trace_now(window: MainWindow) -> None:
-    window._run_vectorize()
-    wait_until(lambda: _traced(window))
+def _drawing(window: MainWindow) -> VectorDrawing:
+    drawing = window.document.current_drawing
+    assert drawing is not None
+    return drawing
 
 
 def _drawing_item(window: MainWindow) -> VectorDrawingItem:
-    items = [item for item in window.canvas.scene().items() if isinstance(item, VectorDrawingItem)]
-    (item,) = items
+    """The canvas item showing the current layer's drawing."""
+    item = window.canvas.document_item.item_for(_drawing(window))
+    assert item is not None
     return item
+
+
+def _add_square(window: MainWindow) -> None:
+    """A square polygon in the current drawing, as one undo step."""
+    corners = [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)]
+
+    def straight(a: tuple[float, float], b: tuple[float, float]) -> Bezier:
+        p0, p3 = np.array(a), np.array(b)
+        return [p0, p0 + (p3 - p0) / 3, p3 + (p0 - p3) / 3, p3]
+
+    fragment, _ = shapes_fragment([[[straight(corners[i], corners[(i + 1) % 4]) for i in range(4)]]])
+    window.document.history.push(Insert(_drawing(window), fragment))
 
 
 def _square_path(tmp_path: Path) -> str:
@@ -55,16 +61,50 @@ def _square_path(tmp_path: Path) -> str:
 # ------------------------------------------------------------- document
 
 
-def test_loading_an_image_builds_image_and_autotrace_layers(window: MainWindow, donut_path: str) -> None:
+def test_starts_with_the_pen_and_nothing_open(window: MainWindow) -> None:
+    assert window.tool is window.trace_tool and window.trace_tool_action.isChecked()
+    assert not window.document.layers
+    assert window.statusBar().currentMessage() == "Open an image to get started."
+    tool_actions = window._tool_action_group.actions()
+    assert tool_actions == [window.trace_tool_action, window.edit_tool_action]
+
+
+def test_loading_an_image_builds_image_and_drawing_layers(window: MainWindow, donut_path: str) -> None:
     window.load_image(donut_path)
 
-    image_layer, trace_layer = window.document.layers
-    assert (image_layer.name, trace_layer.name) == ("Image", "AutoTrace")
+    image_layer, drawing_layer = window.document.layers
+    assert (image_layer.name, drawing_layer.name) == ("Image", "Drawing")
     (image,) = image_layer.items
     assert isinstance(image, RasterImage) and image is window.image
     assert image.size == (100, 100)
-    assert list(trace_layer.items) == [window.auto_trace]
+    assert window.document.current_layer is drawing_layer
+    assert not _drawing(window)
     assert window.canvas.sceneRect() == QRectF(0, 0, 100, 100)
+    assert not window.document.history.can_undo()
+    assert not window.save_action.isEnabled()
+
+
+def test_loading_an_image_traces_its_edges_for_the_pen(window: MainWindow, donut_path: str) -> None:
+    window.load_image(donut_path)
+    assert len(window.trace_tool.edges.contours) == 2  # the donut's outside and its hole
+    assert window.threshold_row.value() == pytest.approx(128.0, abs=1.0)  # Otsu's choice, shown
+
+
+def test_edge_settings_retrace_the_edges_after_a_pause(window: MainWindow, donut_path: str) -> None:
+    window.load_image(donut_path)
+    before = window.trace_tool.edges
+
+    window.invert_checkbox.setChecked(True)
+    assert window.trace_tool.edges is before  # not yet: debounced
+    wait_until(lambda: window.trace_tool.edges is not before)
+
+
+def test_manual_threshold(window: MainWindow, donut_path: str) -> None:
+    window.load_image(donut_path)
+    window.auto_threshold_checkbox.setChecked(False)
+    assert window.threshold_row.slider.isEnabled()
+    window.auto_threshold_checkbox.setChecked(True)
+    assert not window.threshold_row.slider.isEnabled()
 
 
 def test_failed_load_leaves_the_document_alone(
@@ -86,124 +126,17 @@ def test_failed_load_leaves_the_document_alone(
     assert list(window.document.layers) == layers
 
 
-def test_loading_an_image_does_not_trigger_vectorization(window: MainWindow, donut_path: str) -> None:
-    """Automatic tracing can be slow on a large image, so opening one
-    leaves the AutoTrace drawing empty until a setting changes."""
-    window.load_image(donut_path)
-    QApplication.processEvents()
-    time.sleep(0.2)
-    QApplication.processEvents()
-    assert not _auto_trace(window)
-    assert not window.save_action.isEnabled()
-
-
-def test_changing_a_setting_after_load_triggers_vectorization(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-
-    window.invert_checkbox.setChecked(True)
-    wait_until(lambda: _traced(window))
-
-    assert _drawing_item(window).drawing is window.auto_trace
-    assert window.save_action.isEnabled()
-
-
-def test_a_new_result_replaces_the_old_one(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    _trace_now(window)
-    first = set(_auto_trace(window).polygons)
-
-    gen_before = window._generation
-    window.invert_checkbox.setChecked(True)
-    wait_until(lambda: window._generation > gen_before and "Vectorizing" not in window.statusBar().currentMessage())
-
-    assert _auto_trace(window).polygons
-    assert not first & set(_auto_trace(window).polygons)
-
-
-def test_pen_and_edit_are_parked(window: MainWindow) -> None:
-    for action in (window.trace_tool_action, window.edit_tool_action, window.undo_action, window.redo_action, window.delete_action):
-        assert not action.isEnabled()
-    assert window.auto_tool_action.isChecked()
-    assert window.tool is window.auto_tool
-
-
-def test_rapid_parameter_changes_coalesce_into_one_run(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    _trace_now(window)
-    gen_before = window._generation
-
-    window.max_error_row.spin.setValue(0.4)
-    window.simplify_row.spin.setValue(0.4)
-    window.corner_row.spin.setValue(30)
-
-    # still within the debounce window -- nothing should have run yet
-    assert window._generation == gen_before
-
-    wait_until(lambda: window._generation > gen_before and "Vectorizing" not in window.statusBar().currentMessage())
-    assert window._generation == gen_before + 1
-
-
-def test_manual_threshold_overrides_auto(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    _trace_now(window)
-
-    window.auto_threshold_checkbox.setChecked(False)
-    assert window.threshold_row.slider.isEnabled()
-
-    gen_before = window._generation
-    window.threshold_row.spin.setValue(200)
-    wait_until(lambda: window._generation > gen_before and "threshold 200" in window.statusBar().currentMessage())
-
-
-def test_auto_threshold_reflects_computed_value(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    _trace_now(window)
-    assert window.threshold_row.value() == pytest.approx(128.0, abs=1.0)
-    assert not window.threshold_row.slider.isEnabled()
-
-
-def test_invert_produces_a_topologically_correct_result(window: MainWindow, donut_path: str) -> None:
-    """With invert on, the background becomes one giant shape with the
-    donut's ring as a hole -- regression test for the hierarchy grouping
-    interacting correctly with inverted bitmaps.
-    """
-    window.load_image(donut_path)
-    _trace_now(window)
-
-    gen_before = window._generation
-    window.invert_checkbox.setChecked(True)
-    wait_until(lambda: window._generation > gen_before and "Vectorizing" not in window.statusBar().currentMessage())
-
-    drawing = _auto_trace(window)
-    (polygon,) = drawing.polygons
-    outer, *holes = drawing.shape(polygon)
-    assert holes
-    assert any(np.allclose(bezier[0], (0, 0)) for bezier in outer)  # the giant background rectangle's corner
-
-
-def test_a_trace_for_the_previous_image_is_dropped(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
-    window.load_image(donut_path)
-    window._run_vectorize()  # still running when the next image arrives
-    window.load_image(_square_path(tmp_path))
-
-    QApplication.processEvents()
-    time.sleep(0.3)
-    QApplication.processEvents()
-    assert not _auto_trace(window)
-
-
 def test_loading_a_new_image_starts_over(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
     window.load_image(donut_path)
-    _trace_now(window)
+    _add_square(window)
     old_item = _drawing_item(window)
 
     window.load_image(_square_path(tmp_path))
 
     assert not shiboken6.isValid(old_item)
-    assert not _auto_trace(window)
+    assert not _drawing(window)
     assert window.image is not None and window.image.size == (50, 50)
-    assert not window.save_action.isEnabled()
-    _trace_now(window)
+    assert not window.save_action.isEnabled() and not window.undo_action.isEnabled()
 
 
 # ------------------------------------------------------------------ save
@@ -219,20 +152,22 @@ def _save_to(window: MainWindow, out_path: Path, monkeypatch: pytest.MonkeyPatch
 
 def test_save_svg_writes_the_document(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window.load_image(donut_path)
-    _trace_now(window)
+    _add_square(window)
+    assert window.save_action.isEnabled()
     out_path = tmp_path / "out.svg"
 
     _save_to(window, out_path, monkeypatch)
 
-    expected = svgwrite.build_svg(_auto_trace(window).shapes(), 100, 100, fill=window._overlay_color.name(), precision=2)
+    expected = svgwrite.build_svg(_drawing(window).shapes(), 100, 100, fill=window._overlay_color.name(), precision=2)
     assert out_path.read_text(encoding="utf-8") == expected
-    assert expected.count("<path") == len(_auto_trace(window).polygons)
+    assert expected.count("<path") == 1
 
 
 def test_save_svg_leaves_out_hidden_layers(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window.load_image(donut_path)
-    _trace_now(window)
+    _add_square(window)
     window.document.layers[1].visible = False  # the only drawing: nothing left to save
+    assert not window.save_action.isEnabled()
     out_path = tmp_path / "out.svg"
 
     _save_to(window, out_path, monkeypatch)
@@ -354,47 +289,44 @@ def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_
 # ------------------------------------------------------------- display
 
 
-def test_opacity_and_color_style_the_drawing_without_revectorizing(window: MainWindow, donut_path: str) -> None:
+def test_opacity_and_color_style_the_drawing(window: MainWindow, donut_path: str) -> None:
     window.load_image(donut_path)
-    _trace_now(window)
-    gen_before = window._generation
 
     window.opacity_slider.setValue(80)
 
-    assert _drawing_item(window)._style.fill_opacity == pytest.approx(0.8)
-    assert _drawing_item(window)._style.fill_color == window._overlay_color
-    time.sleep(0.3)
-    QApplication.processEvents()
-    assert window._generation == gen_before
+    assert _drawing_item(window).view.style.fill_opacity == pytest.approx(0.8)
+    assert _drawing_item(window).view.style.fill_color == window._overlay_color
+    assert window.opacity_label.text() == "80%"
 
 
-def test_lines_and_points_hidden_by_default(window: MainWindow, donut_path: str) -> None:
+def test_lines_and_points_hidden_by_default_and_toggled(window: MainWindow, donut_path: str) -> None:
     window.load_image(donut_path)
     assert window.wireframe_checkbox.isChecked() is False
-    style = _drawing_item(window)._style
+    style = _drawing_item(window).view.style
     assert not style.show_lines and not style.show_points
 
-
-def test_lines_and_points_toggle_without_revectorizing(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    _trace_now(window)
-    gen_before = window._generation
-
     window.wireframe_checkbox.setChecked(True)
-    style = _drawing_item(window)._style
+    style = _drawing_item(window).view.style
     assert style.show_lines and style.show_points
 
-    QApplication.processEvents()
-    assert window._generation == gen_before  # pure display toggle, no recompute
 
-    window.wireframe_checkbox.setChecked(False)
-    assert not _drawing_item(window)._style.show_lines
+def test_reset_to_defaults(window: MainWindow, donut_path: str) -> None:
+    window.load_image(donut_path)
+    window.invert_checkbox.setChecked(True)
+    window.opacity_slider.setValue(10)
+    window.wireframe_checkbox.setChecked(True)
+
+    window._reset_defaults()
+
+    assert not window.invert_checkbox.isChecked()
+    assert window.opacity_slider.value() == 50
+    assert not _drawing_item(window).view.style.show_lines
 
 
-def test_the_traced_document_paints(window: MainWindow, donut_path: str) -> None:
+def test_the_document_paints(window: MainWindow, donut_path: str) -> None:
     """Smoke test the whole paint path: image, fill, lines and points."""
     window.load_image(donut_path)
-    _trace_now(window)
+    _add_square(window)
     window.wireframe_checkbox.setChecked(True)
 
     image = QImage(100, 100, QImage.Format.Format_ARGB32_Premultiplied)

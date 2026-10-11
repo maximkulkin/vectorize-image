@@ -57,7 +57,7 @@ class Line:
     @property
     def is_loop(self) -> bool:
         """Whether it starts and ends at the same point -- which only a
-        curve can usefully do: it's how the automatic trace outlines a
+        curve can usefully do: it's how the tracing pipeline outlines a
         small, smooth blob."""
         return self.start is self.end
 
@@ -317,34 +317,10 @@ class VectorDrawing:
         return polygon
 
     def add_shapes(self, shapes: Iterable[Shape]) -> list[Polygon]:
-        """Build a polygon from each of a list of already-fitted shapes (the
-        automatic trace's output, say), as one insertion: a point where
-        each bezier starts, and a curve along each bezier, with control
-        points of its own, to the next one's start point."""
-        points: dict[Point, np.ndarray] = {}
-        lines: list[Line] = []
-        polygons: list[Polygon] = []
-
-        def new_point(position: PointLike) -> Point:
-            point = Point()
-            points[point] = _frozen_point(position)
-            return point
-
-        for shape in shapes:
-            rings: list[list[Line]] = []
-            for contour in shape:
-                if not contour:
-                    continue
-                ends = [new_point(bezier[0]) for bezier in contour]
-                ring: list[Line] = [
-                    BezierCurve(ends[i], ends[(i + 1) % len(ends)], new_point(bezier[1]), new_point(bezier[2]))
-                    for i, bezier in enumerate(contour)
-                ]
-                lines.extend(ring)
-                rings.append(ring)
-            if rings:
-                polygons.append(Polygon(rings))
-        self.insert(Fragment(points, lines, polygons))
+        """Build a polygon from each of a list of already-fitted shapes, as
+        one insertion -- see `shapes_fragment`."""
+        fragment, polygons = shapes_fragment(shapes)
+        self.insert(fragment)
         return polygons
 
     def insert(self, fragment: Fragment) -> None:
@@ -472,3 +448,35 @@ class VectorDrawing:
         for line in lines:
             polygons.update(dict.fromkeys(self._polygons_on[line]))
         self.reshaped.emit(frozenset([*points, *lines, *polygons]))
+
+
+def shapes_fragment(shapes: Iterable[Shape]) -> tuple[Fragment, list[Polygon]]:
+    """A polygon for each of a list of already-fitted shapes (the tracing
+    pipeline's output, say), ready to insert into a drawing: a point where
+    each bezier starts, and a curve along each bezier, with control points
+    of its own, to the next one's start point. Returns the fragment and
+    its polygons, in the shapes' order."""
+    points: dict[Point, np.ndarray] = {}
+    lines: list[Line] = []
+    polygons: list[Polygon] = []
+
+    def new_point(position: PointLike) -> Point:
+        point = Point()
+        points[point] = _frozen_point(position)
+        return point
+
+    for shape in shapes:
+        rings: list[list[Line]] = []
+        for contour in shape:
+            if not contour:
+                continue
+            ends = [new_point(bezier[0]) for bezier in contour]
+            ring: list[Line] = [
+                BezierCurve(ends[i], ends[(i + 1) % len(ends)], new_point(bezier[1]), new_point(bezier[2]))
+                for i, bezier in enumerate(contour)
+            ]
+            lines.extend(ring)
+            rings.append(ring)
+        if rings:
+            polygons.append(Polygon(rings))
+    return Fragment(points, lines, polygons), polygons

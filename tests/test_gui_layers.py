@@ -14,7 +14,7 @@ from PySide6.QtGui import QFocusEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QMenu  # noqa: E402
 
-from conftest import click, wait_until  # noqa: E402
+from conftest import click  # noqa: E402
 from vectorize_image.document import Document, Layer, VectorDrawing  # noqa: E402
 from vectorize_image.gui.document_items import LayerItem  # noqa: E402
 from vectorize_image.gui.layers_panel import BORDERLESS_BUTTON_STYLE, LayerRow, LayersPanel  # noqa: E402
@@ -226,11 +226,12 @@ def test_the_panel_is_a_dock_toggled_from_the_view_menu(window: MainWindow) -> N
 
 def test_window_panel_shows_the_loaded_layers(window: MainWindow, diamond_path: str) -> None:
     window.load_image(diamond_path)
-    assert [name for name, *_ in _rows(window.layers_panel)] == ["Drawing", "AutoTrace", "Image"]
+    assert [name for name, *_ in _rows(window.layers_panel)] == ["Drawing", "Image"]
     assert window.layers_panel.list.currentRow() == 0
 
     window.layers_panel.list.setCurrentRow(1)
-    assert window.document.current_drawing is window.auto_trace
+    assert window.document.current_layer is window.document.layers[0]
+    assert window.document.current_drawing is None
 
 
 def test_layer_opacity_reaches_the_canvas(window: MainWindow, diamond_path: str) -> None:
@@ -306,17 +307,6 @@ def test_drawing_edits_in_a_deleted_layer_come_back_with_it(window: MainWindow, 
     assert not drawing
 
 
-def test_a_trace_for_a_deleted_autotrace_layer_is_dropped(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    _row(window.layers_panel, "AutoTrace").delete_button.click()
-    QApplication.processEvents()
-
-    window._run_vectorize()
-    wait_until(lambda: "No AutoTrace layer" in window.statusBar().currentMessage())
-
-    assert window.auto_trace is not None and not window.auto_trace
-
-
 # ----------------------------------------------------------- the Edit menu
 
 
@@ -327,11 +317,11 @@ def test_undo_and_redo_name_the_layer_change(window: MainWindow, diamond_path: s
     window.layers_panel.new_layer_button.click()
     assert window.undo_action.text() == "&Undo New layer"
 
-    window.layers_panel.list.model().moveRow(QModelIndex(), 0, QModelIndex(), 4)  # to the bottom
+    window.layers_panel.list.model().moveRow(QModelIndex(), 0, QModelIndex(), 3)  # to the bottom
     QApplication.processEvents()
     assert window.undo_action.text() == "&Undo Move layer"
 
-    _row(window.layers_panel, "AutoTrace").delete_button.click()
+    _row(window.layers_panel, "Image").delete_button.click()
     QApplication.processEvents()
     assert window.undo_action.text() == "&Undo Delete layer"
 
@@ -420,5 +410,5 @@ def test_typing_a_name_in_the_window_does_not_trigger_shortcuts(window: MainWind
     QTest.keyClick(row.name_editor, Qt.Key.Key_Backspace)
     QTest.keyClick(row.name_editor, Qt.Key.Key_Return)
 
-    assert window.document.layers[2].name == "Layer"  # "Layer 2", less the 2, trimmed
+    assert window.document.layers[1].name == "Layer"  # "Layer 2", less the 2, trimmed
     assert window.document.selection.mode == "points"

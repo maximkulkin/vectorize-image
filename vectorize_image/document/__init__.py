@@ -1,7 +1,7 @@
 """The document model: a Document holds layers, a Layer holds items, and an
 item is a RasterImage or a VectorDrawing (of Points, Lines -- straight, or
 BezierCurves -- and Polygons). The Document also keeps its current layer,
-its undo History of Commands, and Selection.
+its undo History of Commands, and the Edit tool's Selection.
 
 Qt-free. Everything that shows or acts on the document subscribes to the
 signals of its parts rather than being told to refresh.

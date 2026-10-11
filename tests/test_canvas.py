@@ -23,6 +23,7 @@ from vectorize_image.gui.document_items import (  # noqa: E402
     ModelItem,
     RasterImageItem,
     VectorDrawingItem,
+    VectorStyle,
 )
 
 
@@ -171,6 +172,16 @@ def test_layer_visibility_follows_the_layer(canvas: Canvas) -> None:
     assert layer_item.isVisible()
 
 
+def test_layer_opacity_follows_the_layer(canvas: Canvas) -> None:
+    layer = Layer("a", opacity=0.3)
+    canvas.document.layers.append(layer)
+    (layer_item,) = _layer_items(canvas)
+    assert layer_item.opacity() == pytest.approx(0.3)
+
+    layer.opacity = 0.7
+    assert layer_item.opacity() == pytest.approx(0.7)
+
+
 def test_every_item_is_a_model_item(canvas: Canvas) -> None:
     canvas.document.layers.append(Layer("a", [_solid(1, 1, (0, 0, 0, 255)), VectorDrawing()]))
     assert all(isinstance(item, ModelItem) for item in canvas.scene().items())
@@ -306,3 +317,70 @@ def test_scene_distance_tracks_the_zoom(canvas: Canvas) -> None:
     canvas.zoom_in()
 
     assert canvas.scene_distance(12.0) == pytest.approx(before / canvas.ZOOM_IN_FACTOR)
+
+
+# --------------------------------------------------------- editing decorations
+
+
+def _square_drawing() -> VectorDrawing:
+    drawing = VectorDrawing()
+    corners = [drawing.add_point(p) for p in [(10, 10), (40, 10), (40, 40), (10, 40)]]
+    lines = [drawing.add_line(corners[i], corners[(i + 1) % 4]) for i in range(4)]
+    drawing.add_polygon([lines])
+    return drawing
+
+
+def test_a_move_preview_draws_moved_without_moving(canvas: Canvas) -> None:
+    drawing = _square_drawing()
+    canvas.document.layers.append(Layer("a", [drawing]))
+    item = canvas.document_item.item_for(drawing)
+    assert item is not None
+    corner = next(iter(drawing.points))
+    line = drawing.lines_at(corner)[0]
+
+    canvas.preview_move(drawing, frozenset({corner}), (5, -5))
+
+    assert np.allclose(drawing.position(corner), (10, 10))
+    assert np.allclose(item.bezier(line)[0 if line.start is corner else 3], (15, 5))
+    assert item.boundingRect().contains(QRectF(14, 4, 2, 2))
+
+    canvas.end_move_preview(drawing)
+    assert np.allclose(item.bezier(line)[0 if line.start is corner else 3], (10, 10))
+
+
+def test_only_the_current_drawing_gets_editing_decorations(canvas: Canvas) -> None:
+    current, other = _square_drawing(), _square_drawing()
+    canvas.document.layers.append(Layer("other", [other]))
+    canvas.document.layers.append(layer := Layer("current", [current]))
+    canvas.document.current_layer = layer
+    canvas.set_vector_style(VectorStyle(show_lines=False, show_points=False))
+    canvas.set_editing(outline=True, controls=True)
+
+    current_item, other_item = canvas.document_item.item_for(current), canvas.document_item.item_for(other)
+    assert current_item is not None and other_item is not None
+    assert current_item.is_current and not other_item.is_current
+    assert current_item.view.show_controls and current_item.view.outline_current
+
+
+def test_lines_hidden_by_style_show_on_the_current_drawing_while_editing(canvas: Canvas) -> None:
+    drawing = VectorDrawing()
+    a, b = drawing.add_point((5, 25)), drawing.add_point((45, 25))
+    drawing.add_line(a, b)  # an open line: no fill, only its stroke shows
+    canvas.document.layers.append(Layer("a", [drawing]))
+    canvas.set_vector_style(VectorStyle(show_lines=False, show_points=False))
+
+    assert _render(canvas, 50, 50).pixelColor(25, 25) == QColor(255, 255, 255)
+    canvas.set_editing(outline=True)
+    assert _render(canvas, 50, 50).pixelColor(25, 25) != QColor(255, 255, 255)
+
+
+def test_the_selection_is_highlighted(canvas: Canvas) -> None:
+    drawing = _square_drawing()
+    canvas.document.layers.append(Layer("a", [drawing]))
+    canvas.set_vector_style(VectorStyle(fill_opacity=0.0, show_lines=False, show_points=False))
+    canvas.document.selection.set_mode("lines")
+    blank = _render(canvas, 50, 50).pixelColor(25, 10)
+
+    canvas.document.selection.set_items(drawing.lines)
+
+    assert _render(canvas, 50, 50).pixelColor(25, 10) != blank

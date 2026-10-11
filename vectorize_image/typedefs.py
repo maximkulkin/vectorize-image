@@ -14,12 +14,6 @@ type Bezier = list[np.ndarray]  # a cubic: [P0, P1, P2, P3]
 type Contour = list[Bezier]  # closed: each bezier's P3 is the next one's P0
 type Shape = list[Contour]  # an outer contour followed by its holes
 
-# Manual-trace graph handles: an anchor (a node) or a segment's control
-# point, P1 or P2 of its bezier.
-type AnchorHandle = tuple[Literal["anchor"], int]  # ("anchor", node_id)
-type ControlHandle = tuple[Literal["control"], int, int]  # ("control", segment_index, 1 | 2)
-type Handle = AnchorHandle | ControlHandle
-
 # What the Edit tool selects: a vector drawing's points (ends and control
 # points alike), its lines, or its polygons.
 type SelectionMode = Literal["points", "lines", "polygons"]

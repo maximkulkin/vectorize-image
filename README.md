@@ -58,8 +58,7 @@ vectorize-image icon.png --max-error 0.3 --simplify-tolerance 0.3
 
 ## GUI
 
-A PySide6 desktop app is included for interactively tuning the settings above
-while watching the result update live.
+A PySide6 desktop app is included for tracing an image by hand, on layers.
 
 ```
 pip install -e ".[gui]"
@@ -68,132 +67,103 @@ vectorize-image-gui [optional/path/to/image.png]
 
 (or `python -m vectorize_image.gui.app`)
 
-It shows the original image and the current vector trace overlaid on the same
-canvas — drag the **vector opacity** slider to blend between them and spot
-exactly where the trace deviates from the source, and pick a high-contrast
-**overlay color** (default red) if the original art is dark. The sidebar
-exposes every vectorization setting from the table above (threshold, with an
-Auto/manual toggle; invert; simplify tolerance; corner threshold; max curve
-error; min area) as paired slider + spin-box controls. Opening an image
-doesn't trace it right away — tracing can be slow on a large image, and
-plenty of sessions go straight to Pen/Edit without ever needing
-it — so the overlay stays empty until you change one of these settings (or
-switch to/back onto the AutoTrace tool), which re-runs vectorization
-automatically, debounced by ~150ms and off the UI thread, so dragging a
-slider stays smooth even while it's recomputing.
+Opening an image starts a fresh document of two layers: **Image**, holding
+the picture, and **Drawing** above it — an empty vector drawing, and the
+current layer, where the tools work.
 
-Check **Show lines and points** to overlay the actual fitted geometry on top
-of the filled trace: each contour's path as a line, on-curve anchor points
-(blue, where segments meet) and off-curve control points (orange, with a
-thin dashed handle back to their anchor) for genuinely curved segments —
-straight segments are drawn as a plain line with no control points, since
-there's no curve there to inspect. This is the most direct way to see what
-the curve fitter actually did: how many segments it used, where it placed
-corners, whether a handle looks unreasonably long. Lines and points are
-drawn at a constant on-screen size regardless of zoom, so they stay legible
-whether you're looking at the whole image or zoomed in on one corner.
+### Layers
+
+The **Layers** panel (a dock; show or hide it from **View → Layers**) lists
+the layers top first. Each row has:
+
+- a grip at its left end — **drag** it to move the layer up or down;
+- an **eye** button that shows or hides the layer;
+- the layer's name — **double-click** it to rename the layer (**Enter**
+  renames, **Esc** or clicking away leaves it as it was);
+- an **opacity** slider, 0–100%, for the whole layer;
+- a **trash** button that deletes the layer.
+
+The selected row is the current layer, which Pen draws in and Edit edits.
+**+ New Layer** at the bottom adds an empty layer above the selected one.
 
 ### Tools
 
-**AutoTrace** is only one of three **Tool** buttons on the toolbar's
-second row (wand over a polygon / pencil on a curve / square with one point enlarged) — switch to **Pen** to draw
-curves by hand where the automatic settings won't nail a shape, or **Edit**
-to select and fix up curves (from either tool) that didn't come out quite
-right. Pen and Edit share the same underlying set of points and
-curves, so you can switch between drawing and adjusting freely without
-losing work; the first time you switch to either one, it starts from
-whatever the automatic pipeline last produced, so "trace automatically,
-then touch up by hand" is a single fluid workflow rather than starting from
-a blank canvas. Threshold and invert still apply in both (they control what
-edges there are to snap to); the curve-fit-specific settings don't, since
-there's no automatic fitting happening in either to tune.
+Two **Tool** buttons on the toolbar's second row:
 
 #### Pen
 
-A click-to-place "magnetic pen":
+A click-to-place "magnetic pen", drawing in the current layer:
 
-1. **Click** to place a starting point — it snaps to the nearest traced edge.
+1. **Click** to place a starting point — it snaps to the nearest edge in the
+   image.
 2. **Move the cursor**: a live single bezier curve previews from that point,
    snapped to and following the actual edge under the cursor.
-3. **Click again** to commit that segment. Its endpoint becomes the new
-   active point, and the process repeats for the next segment.
-4. Click near an existing **open point** (orange — one with only a single
-   segment attached) instead of empty space, and the new segment connects to
-   it rather than creating a new point. That's how a chain closes into a
-   loop, or joins onto another chain — the highlighted point (cyan ring)
-   shows what clicking now would connect to.
-5. **Esc** stops the current chain (its points are kept, and stay resumable
-   — clicking near its open end later continues right from there). A point
-   that never got a first segment attached is discarded rather than left as
-   a stray dot.
+3. **Click again** to commit that curve. Its end becomes the new starting
+   point, and the process repeats for the next curve.
+4. Click near an existing **open point** (orange — the end of a chain)
+   instead of empty space, and the new curve connects to it rather than
+   creating a new point. That's how a chain closes into a loop, or joins
+   onto another chain — the highlighted point (cyan ring) shows what
+   clicking now would connect to. A closed loop becomes a filled polygon;
+   one closed inside another becomes a hole in it.
+5. **Esc** stops the current chain. Its points stay, and clicking near its
+   open end later continues right from there. A starting point that never
+   got a curve leaves nothing behind.
+
+The **Edge Detection** settings in the sidebar decide what counts as ink in
+the image, and so where the edges Pen snaps to are: the **threshold** (Auto
+picks one with Otsu's method) and **invert** (for light ink on a dark
+background).
 
 #### Edit
 
-Every anchor point and control-point handle of the current curves (blue
-internal / orange open anchors, purple control points, with a dashed line
-back to the anchor they belong to) becomes directly draggable, and three
-more toolbar buttons appear (a square with a corner point / one side / the whole square highlighted) for three work modes
-that control what a click picks — each also has a number-key shortcut:
+Selects and changes what's in the current layer's drawing. Three toolbar
+buttons pick what a click selects — each also has a number-key shortcut:
 
-- **Edit points** (`1`) — clicking selects one anchor or control-point handle.
-- **Edit lines** (`2`) — clicking anywhere along a segment's curve selects that
-  whole segment (both its endpoints).
-- **Edit polygons** (`3`) — clicking anywhere along any segment of a contour
-  selects the entire connected contour (every node and segment in it, open
-  or closed), no matter which point along it you clicked.
+- **Edit points** (`1`) — a point: the end of a curve, or one of its
+  control points (purple, with a dashed handle back to its end).
+- **Edit lines** (`2`) — a whole curve, clicked anywhere along it.
+- **Edit polygons** (`3`) — a whole polygon, clicked along its outline or
+  anywhere inside it.
 
-A second row of three toolbar buttons (four-way arrows / dashed-box / dashed-circle
-icons) picks *how* a click or drag builds that selection:
+Three more pick *how* a click or drag builds the selection:
 
 - **Move** (the default) — **click** an item to select just it;
-  **Shift-click** another to add it to the selection, or Shift-click a
-  selected item again to remove it, so you can build up a multi-item
-  selection across several clicks. Clicking empty space clears the
-  selection. With one or more items selected, **drag any one of them** to
-  move the whole selection together, rigidly, by the same offset — this is
-  how you reposition a multi-point selection or slide an entire contour
-  without distorting it. As with a single-handle drag, the whole thing
-  (from press to release) is one step on the undo stack.
+  **Shift-click** another to add it to the selection, or a selected one to
+  take it out. Clicking empty space clears the selection. **Drag** any
+  selected item to move the whole selection together; dragging a point
+  carries its control points along. The move is previewed while you drag,
+  and is one step on the undo stack.
 - **Box Select** — **drag a rectangle**; on release, everything it touches
-  at the current granularity is selected. A curve or contour only needs to
-  pass through the box, not lie entirely inside it. Plain drag replaces the
-  selection; Shift-drag adds to it.
-- **Paint Select** — a circle of adjustable radius (**Brush radius**
-  slider, in the sidebar) follows the cursor; **press and drag** to select
-  everything the circle touches as you sweep it around, the same
-  any-overlap rule as Box Select. It only ever adds as you go, so painting
-  back over something already picked up doesn't deselect it. Without
-  Shift, starting a new stroke clears the previous selection first;
-  with Shift, it's added to instead.
+  is selected (a curve or polygon only needs to pass through the box).
+  Plain drag replaces the selection; Shift-drag adds to it.
+- **Paint Select** — a circle of adjustable radius (**Brush radius** in the
+  sidebar) follows the cursor; **press and drag** to select everything it
+  touches as you sweep it around. Without Shift, a new stroke starts from
+  an empty selection; with Shift, it adds to it.
 
-**Esc** clears the current selection when nothing's in progress, or cancels
-whatever's in progress otherwise: a Move drag snaps back to where it
-started, a Box Select drag is simply abandoned, and a Paint Select stroke
-reverts to the selection it had before the stroke began.
+**Esc** cancels whatever's in progress (a move drag snaps back, a box is
+abandoned, a paint stroke reverts), or else clears the selection.
 
 **Edit → Delete Selection** (`Delete`/`Backspace`, also on the toolbar)
-removes whatever's selected and is itself undoable:
+removes what's selected: points take the curves through them along; curves
+leave their ends; polygons take their outline, except what a neighbouring
+polygon shares.
 
-- **Edit points** mode deletes the selected anchors, along with every segment
-  attached to them.
-- **Edit lines** mode deletes the selected segments but keeps their endpoints
-  (and any other segments still attached to them) in place.
-- **Edit polygons** mode deletes the selected contours entirely.
+### Undo/redo
 
-Both tools: a fully closed loop (drawn filled, in the same overlay
-color/opacity as above) is a real shape — closing one inside another makes
-it a hole (grouped by containment, same as the automatic pipeline). **Save
-Vector as SVG** exports every closed loop this way; open chains are kept
-visible (as plain lines, not filled) so you can see and resume unfinished
-work, but aren't part of the export.
+Every change to the document — a curve drawn, a move, a delete, clearing
+a drawing, and adding, deleting, renaming or moving a layer — is one step
+on an undo stack, via **Edit → Undo** / **Redo** (`Ctrl+Z` /
+`Ctrl+Shift+Z`, also on the toolbar). The menu names the step, e.g.
+"Undo Draw Curve".
 
-#### Undo/redo
+### Display
 
-Every committed change in either tool — placing or connecting a point,
-clearing the trace, a whole selection drag (not each intermediate
-mouse-move frame of it), a Delete Selection — is one step on an undo stack,
-via **Edit → Undo** / **Redo** (`Ctrl+Z` / `Ctrl+Shift+Z`, also on the
-toolbar).
+**Vector opacity** and **Overlay color** set how polygons are filled, over
+the image; check **Show lines and points** to also draw every drawing's
+curves and points (the current layer's always show while drawing or
+editing). Lines and points keep a constant on-screen size at any zoom.
 
 ### Canvas navigation
 
@@ -202,14 +172,15 @@ Mouse and keyboard:
 | Action | Mouse | Keyboard |
 |---|---|---|
 | Zoom in/out | Wheel — zooms on the point under the cursor, so that point stays put on screen | `+`/`-` (or `Ctrl+=`/`Ctrl+-`, or the toolbar/View menu) — zooms on the view's center |
-| Pan | Click-drag | Arrow keys |
+| Pan | — (the left button belongs to Pen and Edit) | Arrow keys |
 | Reset | — | **View → Fit to Window** (`Ctrl+0`) |
 
 Zoom is clamped to a sane range (0.05x–40x) either way. Keyboard shortcuts
 apply once the canvas has focus, which it grabs automatically after loading
 an image.
 
-Use **File → Save Vector as SVG** to export the current result.
+Use **File → Save Vector as SVG** to export the polygons of every visible
+layer.
 
 ## How it works
 

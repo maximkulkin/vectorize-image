@@ -1,4 +1,4 @@
-"""Canvas tools: the controllers between the view and the models.
+"""Canvas tools: the controllers between the view and the document.
 
 Each tool is self-contained. It keeps its own interaction state (a drag in
 progress, a half-drawn marquee, the cursor's last position), owns whatever
@@ -7,35 +7,35 @@ Canvas via add_overlay/remove_overlay, and while it's active it's the
 canvas's interaction handler (which calls its on_move/on_press/on_release/
 on_escape directly).
 
-Pen and Edit (TraceTool, EditTool and its select tools) are parked: they
-still work on a ManualTraceModel and Selection rather than the Document,
-and the main window keeps them disabled until they're rebuilt on the
-document's vector drawings.
-
-Tools change the models (a drawing and its selection) and leave it
-at that: the canvas and the main window listen to the models' signals and
-update themselves. Tools also *react* to model signals -- e.g. the Move tool drops
-a drag in progress if something else (an undo, a delete) changes the drawing
-underneath it -- connecting on activate() and disconnecting on deactivate(),
-so only the active tool reacts.
+The tools, Pen and Edit, work on the document's current drawing --
+the vector drawing in its current layer (see Document.current_drawing).
+They change it only by pushing commands onto the document's history, and
+change the document's selection, and leave it at that: the canvas and the
+main window listen to the document and update themselves. Tools also
+*react* to the document -- e.g. the Move tool drops a drag in progress if
+something else (an undo, a delete) changes the drawing underneath it --
+connecting on activate() and disconnecting on deactivate(), so only the
+active tool reacts.
 """
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable
-from contextlib import contextmanager
-from typing import ClassVar, assert_never, override
+from collections.abc import Iterable, Sequence
+from typing import ClassVar, override
 
+import numpy as np
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsItem
 
-from ..manual_trace import ManualTraceModel
-from ..selection import Selection
+from .. import pen
+from ..document import Document, Element, Point, Remove, Selection, Translate, VectorDrawing
+from ..document.hit_test import box, circle, element_at, elements_in, is_dangling, nearest_point
+from ..edit import elements_to_delete, points_to_move
 from ..signals import Signal, disconnect
+from ..typedefs import Bezier
 from .canvas import Canvas
-from ..typedefs import Bezier, SelectionItem, SelectionMode
-from .manual_trace_item import ACTIVE_COLOR
 from .overlays import (
+    ACTIVE_COLOR,
     HOVER_COLOR,
     SNAP_HIGHLIGHT_COLOR,
     SNAP_HIGHLIGHT_RADIUS_PX,
@@ -48,17 +48,19 @@ from .overlays import (
 
 SNAP_RADIUS_PX = 12.0  # how close (on screen) the cursor must be to hit/snap to something
 PAINT_SELECT_DEFAULT_RADIUS_PX = 30.0
+START_MARKER_RADIUS_PX = 6.5
 
 TRACE_HINT = (
     "Click to place a point. Move the cursor to preview a curve snapped to "
     "the nearest edge, then click to commit it and continue. Click near an "
     "open (orange) point to connect to it -- that's how you close a loop. "
-    "Esc stops."
+    "Esc stops. Draws in the current layer."
 )
 EDIT_HINT = (
-    "Drag any anchor point (blue/orange) or control-point handle (purple) "
-    "to reshape the curve it's on -- it updates live as you drag. Esc "
-    "cancels a drag in progress."
+    "Select points, lines or polygons of the current layer's drawing, then "
+    "drag to move them or press Delete to remove them. Dragging a point "
+    "carries its control points (purple) along. Esc cancels a drag in "
+    "progress."
 )
 
 
@@ -66,39 +68,18 @@ def _xy(scene_pos: QPointF) -> tuple[float, float]:
     return (scene_pos.x(), scene_pos.y())
 
 
-def hit_test(model: ManualTraceModel, mode: SelectionMode, pos: tuple[float, float], radius: float) -> SelectionItem | None:
-    """The item under `pos`, at whatever granularity `mode` selects at: a
-    handle tuple (points), a segment index (curves), or a representative
-    node id (contours)."""
-    if mode == "points":
-        return model.find_handle_near(pos, radius)
-    if mode == "curves":
-        return model.find_segment_near(pos, radius)
-    if mode == "contours":
-        seg_idx = model.find_segment_near(pos, radius)
-        if seg_idx is not None:
-            return model.segments[seg_idx].start
-        handle = model.find_handle_near(pos, radius)
-        if handle is None:
-            return None
-        if handle[0] == "anchor":
-            return handle[1]
-        return model.segments[handle[1]].start
-    assert_never(mode)
-
-
 class Tool:
     """Base class; every hook is a no-op by default."""
 
     name: ClassVar[str] = ""
     hint: ClassVar[str] = ""  # sidebar help text
-    edits_drawing: ClassVar[bool] = False  # works on the manual trace (vs. the automatic result)
     captures_mouse: ClassVar[bool] = False  # takes over left-button input from view panning
 
-    # status_hint() changed for a reason the models' own signals don't cover.
+    # status_hint() changed for a reason the document's own signals don't cover.
     status_changed: ClassVar[Signal] = Signal()
 
-    def __init__(self, canvas: Canvas) -> None:
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        self.document: Document = document
         self.canvas: Canvas = canvas
 
     def activate(self) -> None:
@@ -137,64 +118,91 @@ class Tool:
             self.canvas.remove_overlay(item)
 
 
-# ------------------------------------------------------------------ auto
-
-
-class AutoTool(Tool):
-    """AutoTrace: automatic tracing. No canvas interaction: the pipeline is
-    driven by the settings sidebar, in MainWindow, and its result is a
-    drawing in the document like any other."""
-
-    name: ClassVar[str] = "auto"
-
-
 # ----------------------------------------------------------------- trace
 
 
 class TraceTool(Tool):
-    """Pen: click to place points, each new segment previewed live
-    and snapped to the nearest edge."""
+    """Pen: click to place points, each new curve previewed live and
+    snapped to the nearest edge, in the current layer's drawing. See pen.py
+    for the geometry."""
 
     name: ClassVar[str] = "trace"
     hint: ClassVar[str] = TRACE_HINT
-    edits_drawing: ClassVar[bool] = True
     captures_mouse: ClassVar[bool] = True
 
-    def __init__(self, model: ManualTraceModel, canvas: Canvas) -> None:
-        super().__init__(canvas)
-        self._model: ManualTraceModel = model
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        super().__init__(document, canvas)
+        self.edges: pen.EdgeSource = pen.EdgeSource()
+        # Where the chain goes on from: a point in the drawing, or where the
+        # first one will go (it's only added with the first curve).
+        self.start: pen.Start | None = None
         self.preview_bezier: Bezier | None = None
-        # A dangling node the cursor is close enough to that clicking now
-        # would connect to (or resume) it rather than make a new point.
-        self.snap_target: int | None = None
+        # An open end the cursor is close enough to that clicking now would
+        # connect to (or resume) it rather than make a new point.
+        self.snap_target: Point | None = None
         self._curve: CurvePreview = CurvePreview()
         self._snap_ring: MarkerRing = MarkerRing(SNAP_HIGHLIGHT_RADIUS_PX, SNAP_HIGHLIGHT_COLOR, 2.0)
+        self._start_ring: MarkerRing = MarkerRing(START_MARKER_RADIUS_PX, ACTIVE_COLOR, 2.0)
+
+    def set_edge_source(self, contours: Sequence[np.ndarray]) -> None:
+        """The traced edges new points snap to."""
+        self.edges = pen.EdgeSource(contours)
+
+    def _overlay_items(self) -> tuple[QGraphicsItem, ...]:
+        return (self._curve, self._snap_ring, self._start_ring)
 
     @override
     def activate(self) -> None:
-        self._add_overlays((self._curve, self._snap_ring))
-        self._model.changed.connect(self._on_model_changed)
+        self.canvas.set_editing(outline=True)
+        self._add_overlays(self._overlay_items())
+        self.document.history.changed.connect(self._on_drawing_changed)
+        self.document.current_layer_changed.connect(self._stop)
 
     @override
     def deactivate(self) -> None:
-        disconnect(self._model.changed, self._on_model_changed)
-        self._set_preview(None, None)
-        self._remove_overlays((self._curve, self._snap_ring))
+        disconnect(self.document.history.changed, self._on_drawing_changed)
+        disconnect(self.document.current_layer_changed, self._stop)
+        self._stop()
+        self._remove_overlays(self._overlay_items())
+        self.canvas.set_editing(outline=False)
 
-    def _on_model_changed(self) -> None:
+    def _on_drawing_changed(self) -> None:
         # Whatever changed (a commit, an undo, a clear), the preview was
         # computed against the old drawing; the next mouse move redoes it.
+        # And if the chain's end went away (an undo), there's no going on.
+        drawing = self.document.current_drawing
+        if isinstance(self.start, Point) and (drawing is None or self.start not in drawing):
+            self.start = None
+            self.status_changed.emit()
+        self._show_start()
         self._set_preview(None, None)
 
-    def _set_preview(self, bezier: Bezier | None, snap_target: int | None) -> None:
+    def _stop(self) -> None:
+        self.start = None
+        self._show_start()
+        self._set_preview(None, None)
+        self.status_changed.emit()
+
+    def _show_start(self) -> None:
+        drawing = self.document.current_drawing
+        if self.start is None:
+            self._start_ring.hide()
+        elif isinstance(self.start, Point):
+            if drawing is not None and self.start in drawing:
+                self._start_ring.show_at(drawing.position(self.start))
+        else:
+            self._start_ring.show_at(self.start)
+
+    def _set_preview(self, bezier: Bezier | None, snap_target: Point | None) -> None:
         self.preview_bezier = bezier
         self.snap_target = snap_target
         if bezier is None:
             self._curve.hide()
         else:
             self._curve.show_bezier(bezier)
-        if snap_target is not None and snap_target in self._model.nodes:
-            self._snap_ring.show_at(self._model.nodes[snap_target])
+        drawing = self.document.current_drawing
+        if snap_target is not None and drawing is not None and snap_target in drawing:
+            self._snap_ring.show_at(drawing.position(snap_target))
         else:
             self._snap_ring.hide()
 
@@ -202,32 +210,41 @@ class TraceTool(Tool):
     def on_move(self, scene_pos: QPointF) -> None:
         pos = _xy(scene_pos)
         radius = self.canvas.scene_distance(SNAP_RADIUS_PX)
-        if self._model.active_node is None:
-            # Nothing to preview a curve toward yet, but still highlight a
-            # nearby open point so it's clear that clicking now would
-            # resume it rather than start a brand new chain.
-            self._set_preview(None, self._model.find_dangling_near(pos, radius))
+        drawing = self.document.current_drawing or VectorDrawing()  # nothing drawn yet: nothing to snap to
+        if self.start is None:
+            # Nothing to preview a curve from yet, but still highlight a
+            # nearby open end so it's clear that clicking now would resume
+            # it rather than start a brand new chain.
+            self._set_preview(None, nearest_point(drawing, pos, radius, lambda p: is_dangling(drawing, p)))
             return
-        self._set_preview(*self._model.preview(pos, radius))
+        segment = pen.plan_segment(drawing, self.edges, self.start, pos, radius)
+        if segment is None:
+            self._set_preview(None, None)
+        else:
+            self._set_preview(segment.bezier, segment.connects_to)
 
     @override
     def on_press(self, scene_pos: QPointF, shift: bool) -> None:
         pos = _xy(scene_pos)
         radius = self.canvas.scene_distance(SNAP_RADIUS_PX)
-        if self._model.active_node is None:
-            self._model.begin_or_resume(pos, radius)
+        drawing = self.document.ensure_current_drawing()
+        if self.start is None:
+            self.start = pen.start_at(drawing, self.edges, pos, radius)
         else:
-            self._model.commit(pos, radius)
-        self._set_preview(None, None)  # even if the commit was a degenerate no-op
+            segment = pen.plan_segment(drawing, self.edges, self.start, pos, radius)
+            if segment is not None:
+                self.start = pen.commit_segment(self.document.history, drawing, self.start, segment)
+        self._show_start()
+        self._set_preview(None, None)
+        self.status_changed.emit()
 
     @override
     def on_escape(self) -> None:
-        self._model.cancel()
-        self._set_preview(None, None)
+        self._stop()
 
     @override
     def status_hint(self) -> str:
-        if self._model.active_node is None:
+        if self.start is None:
             return "click to start a chain"
         return "click to place the next point, click an open point to connect, Esc to stop"
 
@@ -241,20 +258,20 @@ def _selected_noun(selection: Selection) -> str:
 
 class SelectTool(Tool):
     """One of the Edit tool's interchangeable ways of selecting (and, for
-    Move, dragging) -- see EditTool."""
+    Move, dragging) -- see EditTool. They select in the document's
+    selection, which is always in the current drawing."""
 
-    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
-        super().__init__(canvas)
-        self._model: ManualTraceModel = model
-        self._selection: Selection = selection
+    @property
+    def selection(self) -> Selection:
+        return self.document.selection
 
     @override
     def activate(self) -> None:
-        self._selection.mode_changed.connect(self._on_mode_changed)
+        self.selection.mode_changed.connect(self._on_mode_changed)
 
     @override
     def deactivate(self) -> None:
-        disconnect(self._selection.mode_changed, self._on_mode_changed)
+        disconnect(self.selection.mode_changed, self._on_mode_changed)
         self._abort()
 
     def _on_mode_changed(self, _mode: str) -> None:
@@ -267,17 +284,19 @@ class SelectTool(Tool):
 
 class MoveSelectTool(SelectTool):
     """Click to select (shift-click to toggle), drag a selected item to
-    move the whole selection."""
+    move the whole selection. The drag is previewed on the canvas and
+    committed as one move when the button is released."""
 
     name: ClassVar[str] = "move"
 
-    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
-        super().__init__(model, selection, canvas)
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        super().__init__(document, canvas)
         self._drag_origin: tuple[float, float] | None = None  # press position, for computing a drag's delta
-        self._drag_checkpointed: bool = False  # lazy: only checkpoint once actual movement happens
-        self._own_change: bool = False
-        self.hover_target: SelectionItem | None = None
-        self.active_target: SelectionItem | None = None  # what was pressed on, highlighted for the rest of the drag
+        self._drag_points: frozenset[Point] = frozenset()  # what the drag moves
+        self._drag_delta: tuple[float, float] = (0.0, 0.0)
+        self._drawing: VectorDrawing | None = None  # what hover/drag state refers to
+        self.hover_target: Element | None = None
+        self.active_target: Element | None = None  # what was pressed on, highlighted for the rest of the drag
         self._hover_highlight: HitHighlight = HitHighlight(HOVER_COLOR, 2.0)
         self._active_highlight: HitHighlight = HitHighlight(ACTIVE_COLOR, 2.5)
 
@@ -291,12 +310,15 @@ class MoveSelectTool(SelectTool):
     @override
     def activate(self) -> None:
         super().activate()
+        self._drawing = self.selection.drawing
         self._add_overlays(self._overlay_items())
-        self._model.changed.connect(self._on_model_changed)
+        self.document.history.changed.connect(self._on_drawing_changed)
+        self.selection.changed.connect(self._on_selection_changed)
 
     @override
     def deactivate(self) -> None:
-        disconnect(self._model.changed, self._on_model_changed)
+        disconnect(self.document.history.changed, self._on_drawing_changed)
+        disconnect(self.selection.changed, self._on_selection_changed)
         super().deactivate()
         self._remove_overlays(self._overlay_items())
 
@@ -305,101 +327,95 @@ class MoveSelectTool(SelectTool):
         self._end_drag()
         self._set_hover(None)
 
-    @contextmanager
-    def _changing_model(self) -> Generator[None, None, None]:
-        """Marks model changes this tool makes itself, so _on_model_changed
-        can tell them apart from changes made by someone else."""
-        self._own_change = True
-        try:
-            yield
-        finally:
-            self._own_change = False
-
-    def _on_model_changed(self) -> None:
-        if not self._own_change:
-            # Something else (undo/redo, delete, clear) changed the drawing
-            # underneath us: a drag would keep applying stale originals,
-            # and the highlighted targets may not exist anymore.
-            self._abort()
-            return
-        self._refresh_highlights()
-
-    def _set_hover(self, target: SelectionItem | None) -> None:
-        self.hover_target = target
-        self._hover_highlight.show(self._model, self._selection.mode, target)
-
-    def _set_active(self, target: SelectionItem | None) -> None:
-        self.active_target = target
-        self._active_highlight.show(self._model, self._selection.mode, target)
-
-    def _refresh_highlights(self) -> None:
+    def _on_drawing_changed(self) -> None:
+        # Something (undo/redo, a delete, our own move) changed the drawing:
+        # a drag in progress would move what may no longer be there, and
+        # the highlighted targets may have moved or gone.
+        self._end_drag()
         self._set_hover(self.hover_target)
-        self._set_active(self.active_target)
+
+    def _on_selection_changed(self) -> None:
+        if self.selection.drawing is not self._drawing:
+            self._abort()  # the current layer changed: a different drawing
+            self._drawing = self.selection.drawing
+
+    def _set_hover(self, target: Element | None) -> None:
+        self.hover_target = target
+        self._hover_highlight.show(self._drawing, target)
+
+    def _set_active(self, target: Element | None) -> None:
+        self.active_target = target
+        self._active_highlight.show(self._drawing, target, self._drag_delta)
 
     def _end_drag(self) -> None:
+        if self._drawing is not None:
+            self.canvas.end_move_preview(self._drawing)
         self._drag_origin = None
-        self._drag_checkpointed = False
+        self._drag_points = frozenset()
+        self._drag_delta = (0.0, 0.0)
         self._set_active(None)
 
     @override
     def on_move(self, scene_pos: QPointF) -> None:
         pos = _xy(scene_pos)
+        drawing = self._drawing
+        if drawing is None:
+            return
         if self._drag_origin is not None:
-            delta = (pos[0] - self._drag_origin[0], pos[1] - self._drag_origin[1])
-            with self._changing_model():
-                if not self._drag_checkpointed and delta != (0.0, 0.0):
-                    self._model.checkpoint()
-                    self._drag_checkpointed = True
-                if self._drag_checkpointed:
-                    self._model.apply_move(delta)
+            self._drag_delta = (pos[0] - self._drag_origin[0], pos[1] - self._drag_origin[1])
+            self.canvas.preview_move(drawing, self._drag_points, self._drag_delta)
+            self._set_active(self.active_target)
             return
         radius = self.canvas.scene_distance(SNAP_RADIUS_PX)
-        self._set_hover(hit_test(self._model, self._selection.mode, pos, radius))
+        self._set_hover(element_at(drawing, self.selection.mode, pos, radius))
 
     @override
     def on_press(self, scene_pos: QPointF, shift: bool) -> None:
         pos = _xy(scene_pos)
+        drawing = self._drawing
+        if drawing is None:
+            return
         radius = self.canvas.scene_distance(SNAP_RADIUS_PX)
-        hit = hit_test(self._model, self._selection.mode, pos, radius)
+        hit = element_at(drawing, self.selection.mode, pos, radius)
 
         if shift:
             if hit is not None:
-                self._selection.toggle(hit)
+                self.selection.toggle(hit)
         elif hit is None:
-            self._selection.clear()
-        elif self._selection.find(hit) is None:
-            self._selection.set_items({hit})
+            self.selection.clear()
+        elif hit not in self.selection:
+            self.selection.set_items({hit})
         # else: hit is already part of the selection -- keep the group
         # selection as-is, so the whole group can be dragged together
 
-        if hit is None:
+        if hit is None or hit not in self.selection:
             self._end_drag()
             return
-        self._model.begin_move(self._selection.mode, self._selection.items)
         self._drag_origin = pos
-        self._drag_checkpointed = False
+        self._drag_points = points_to_move(drawing, self.selection.items)
+        self._drag_delta = (0.0, 0.0)
         self._set_active(hit)
 
     @override
     def on_release(self, scene_pos: QPointF) -> None:
+        drawing, points, delta = self._drawing, self._drag_points, self._drag_delta
         self._end_drag()
+        if drawing is not None and points and delta != (0.0, 0.0):
+            self.document.history.push(Translate(drawing, points, delta, f"Move {self.selection.mode.title()}"))
 
     @override
     def on_escape(self) -> None:
         if self._drag_origin is not None:
-            if self._drag_checkpointed:
-                with self._changing_model():
-                    self._model.cancel_checkpoint()
             self._end_drag()
         else:
-            self._selection.clear()
+            self.selection.clear()
 
     @override
     def status_hint(self) -> str:
-        count = len(self._selection)
+        count = len(self.selection)
         if count:
-            return f"{count} {_selected_noun(self._selection)} selected · drag to move, Delete to remove"
-        return f"click a {self._selection.mode[:-1]} to select it (shift-click for more), drag to move"
+            return f"{count} {_selected_noun(self.selection)} selected · drag to move, Delete to remove"
+        return f"click a {self.selection.mode[:-1]} to select it (shift-click for more), drag to move"
 
 
 class BoxSelectTool(SelectTool):
@@ -407,8 +423,8 @@ class BoxSelectTool(SelectTool):
 
     name: ClassVar[str] = "box"
 
-    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
-        super().__init__(model, selection, canvas)
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        super().__init__(document, canvas)
         self._origin: tuple[float, float] | None = None
         self._shift: bool = False
         self._outline: BoxOutline = BoxOutline()
@@ -453,23 +469,25 @@ class BoxSelectTool(SelectTool):
     def on_release(self, scene_pos: QPointF) -> None:
         if self._origin is None:
             return
-        hits = self._model.items_in_box(self._selection.mode, self._origin, _xy(scene_pos))
+        region = box(self._origin, _xy(scene_pos))
         replace = not self._shift
         self._abort()
-        self._selection.add(hits, replace=replace)
+        drawing = self.selection.drawing
+        hits = set[Element]() if drawing is None else elements_in(drawing, self.selection.mode, region)
+        self.selection.add(hits, replace=replace)
 
     @override
     def on_escape(self) -> None:
         if self._origin is not None:
             self._abort()
         else:
-            self._selection.clear()
+            self.selection.clear()
 
     @override
     def status_hint(self) -> str:
-        count = len(self._selection)
+        count = len(self.selection)
         if count:
-            return f"{count} {_selected_noun(self._selection)} selected · drag a box to select, Delete to remove"
+            return f"{count} {_selected_noun(self.selection)} selected · drag a box to select, Delete to remove"
         return "drag a box to select (shift to add)"
 
 
@@ -478,11 +496,11 @@ class PaintSelectTool(SelectTool):
 
     name: ClassVar[str] = "paint"
 
-    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
-        super().__init__(model, selection, canvas)
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        super().__init__(document, canvas)
         self.radius_px: float = PAINT_SELECT_DEFAULT_RADIUS_PX  # on screen, independent of zoom
         self._painting: bool = False
-        self._press_selection: frozenset[SelectionItem] | None = None  # what Escape reverts to
+        self._press_selection: frozenset[Element] | None = None  # what Escape reverts to
         self._last_pos: tuple[float, float] | None = None
         self._outline: BrushOutline = BrushOutline()
 
@@ -519,9 +537,9 @@ class PaintSelectTool(SelectTool):
         radius = self._scene_radius()
         self._last_pos = pos
         self._outline.show_brush(pos, radius)
-        if self._painting:
-            hits = self._model.items_in_circle(self._selection.mode, pos, radius)
-            self._selection.add(hits, replace=replace)
+        drawing = self.selection.drawing
+        if self._painting and drawing is not None:
+            self.selection.add(elements_in(drawing, self.selection.mode, circle(pos, radius)), replace=replace)
 
     @override
     def on_move(self, scene_pos: QPointF) -> None:
@@ -529,7 +547,7 @@ class PaintSelectTool(SelectTool):
 
     @override
     def on_press(self, scene_pos: QPointF, shift: bool) -> None:
-        self._press_selection = self._selection.items
+        self._press_selection = self.selection.items
         self._painting = True
         self._paint_at(_xy(scene_pos), replace=not shift)
 
@@ -540,36 +558,34 @@ class PaintSelectTool(SelectTool):
     @override
     def on_escape(self) -> None:
         if self._painting:
-            self._selection.set_items(self._press_selection or ())
+            self.selection.set_items(self._press_selection or ())
             self._abort()
         else:
-            self._selection.clear()
+            self.selection.clear()
 
     @override
     def status_hint(self) -> str:
-        count = len(self._selection)
+        count = len(self.selection)
         if count:
-            return f"{count} {_selected_noun(self._selection)} selected · hold and drag the brush to select, Delete to remove"
+            return f"{count} {_selected_noun(self.selection)} selected · hold and drag the brush to select, Delete to remove"
         return "hold and drag the brush to select (shift to add)"
 
 
 class EditTool(Tool):
-    """Edit: select points, curves, or contours (the Selection's mode) with
-    one of the select sub-tools, then move or delete them. Delegates all
-    canvas input to whichever sub-tool is current."""
+    """Edit: select points, lines, or polygons of the current drawing (the
+    Selection's mode) with one of the select sub-tools, then move or
+    delete them. Delegates all canvas input to whichever sub-tool is
+    current."""
 
     name: ClassVar[str] = "edit"
     hint: ClassVar[str] = EDIT_HINT
-    edits_drawing: ClassVar[bool] = True
     captures_mouse: ClassVar[bool] = True
 
-    def __init__(self, model: ManualTraceModel, selection: Selection, canvas: Canvas) -> None:
-        super().__init__(canvas)
-        self._model: ManualTraceModel = model
-        self._selection: Selection = selection
-        self.move_tool: MoveSelectTool = MoveSelectTool(model, selection, canvas)
-        self.box_tool: BoxSelectTool = BoxSelectTool(model, selection, canvas)
-        self.paint_tool: PaintSelectTool = PaintSelectTool(model, selection, canvas)
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        super().__init__(document, canvas)
+        self.move_tool: MoveSelectTool = MoveSelectTool(document, canvas)
+        self.box_tool: BoxSelectTool = BoxSelectTool(document, canvas)
+        self.paint_tool: PaintSelectTool = PaintSelectTool(document, canvas)
         self._select_tools: dict[str, SelectTool] = {
             t.name: t for t in (self.move_tool, self.box_tool, self.paint_tool)
         }
@@ -590,13 +606,15 @@ class EditTool(Tool):
     @override
     def activate(self) -> None:
         self._active = True
+        self.canvas.set_editing(outline=True, controls=True)
         self.select_tool.activate()
 
     @override
     def deactivate(self) -> None:
         self._active = False
         self.select_tool.deactivate()
-        self._selection.clear()
+        self.document.selection.clear()
+        self.canvas.set_editing(outline=False)
 
     @override
     def on_move(self, scene_pos: QPointF) -> None:
@@ -620,9 +638,15 @@ class EditTool(Tool):
 
     @override
     def can_delete(self) -> bool:
-        return bool(self._selection)
+        selection = self.document.selection
+        return selection.drawing is not None and bool(elements_to_delete(selection.drawing, selection.mode, selection.items))
 
     @override
     def delete_selection(self) -> None:
-        if self._model.delete_selection(self._selection.mode, self._selection.items):
-            self._selection.clear()
+        selection = self.document.selection
+        drawing = selection.drawing
+        if drawing is None:
+            return
+        doomed = elements_to_delete(drawing, selection.mode, selection.items)
+        if doomed:
+            self.document.history.push(Remove(drawing, doomed, f"Delete {selection.mode.title()}"))

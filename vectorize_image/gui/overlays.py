@@ -13,12 +13,12 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem
 
-from ..manual_trace import ManualTraceModel
-from ..typedefs import Bezier, PointLike, SelectionItem, SelectionMode
-from .document_items import bezier_path
-from .manual_trace_item import LINE_WIDTH_PX, handle_position
+from ..document import Element, Line, Point, Polygon, VectorDrawing
+from ..typedefs import Bezier, PointLike
+from .document_items import LINE_WIDTH_PX, bezier_path
 
 PREVIEW_COLOR = QColor(255, 214, 0)
+ACTIVE_COLOR = QColor(255, 214, 0)  # where the Pen's chain goes on from; what a drag is moving
 SNAP_HIGHLIGHT_COLOR = QColor(0, 229, 255)
 HOVER_COLOR = SNAP_HIGHLIGHT_COLOR
 AREA_SELECT_COLOR = QColor(33, 150, 243)
@@ -54,7 +54,7 @@ class MarkerRing(QGraphicsEllipseItem):
 
 
 class CurvePreview(QGraphicsPathItem):
-    """The Trace tool's dashed not-yet-committed segment."""
+    """The Pen tool's dashed not-yet-committed curve."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -67,10 +67,10 @@ class CurvePreview(QGraphicsPathItem):
 
 
 class HitHighlight:
-    """Highlights one Edit-tool hit target (what `tools.hit_test` returns):
-    a ring around a point handle in Points mode, or a thick stroke along the
-    segments of a curve or whole contour otherwise. Not an item itself --
-    it switches between two, see `items`."""
+    """Highlights one element of a vector drawing (what the Edit tool's
+    hit test finds): a ring around a point, or a thick stroke along a line
+    or a polygon's outline. Not an item itself -- it switches between two,
+    see `items`."""
 
     def __init__(self, color: QColor, ring_width: float) -> None:
         self.ring: MarkerRing = MarkerRing(HANDLE_HIGHLIGHT_RADIUS_PX, color, ring_width)
@@ -81,24 +81,27 @@ class HitHighlight:
     def items(self) -> tuple[QGraphicsItem, ...]:
         return (self.ring, self.stroke)
 
-    def show(self, model: ManualTraceModel, mode: SelectionMode, target: SelectionItem | None) -> None:
+    def show(self, drawing: VectorDrawing | None, target: Element | None, offset: PointLike = (0.0, 0.0)) -> None:
+        """Highlight `target`, shifted by `offset` (to follow a move being
+        dragged) -- or nothing, if it's None or no longer in the drawing."""
         self.ring.hide()
         self.stroke.hide()
-        if target is None:
+        if drawing is None or target is None or target not in drawing:
             return
-        if isinstance(target, tuple):  # a handle: Points mode
-            pos = handle_position(model, target)
-            if pos is not None:
-                self.ring.show_at(pos)
-            return
-        if mode == "curves":
-            seg_indices: set[int] = {target} if 0 <= target < len(model.segments) else set()
-        else:
-            _, seg_indices = model.connected_component(target)
+        offset = np.asarray(offset, dtype=float)
+        match target:
+            case Point():
+                self.ring.show_at(drawing.position(target) + offset)
+                return
+            case Line():
+                lines = [target]
+            case Polygon():
+                lines = list(target.lines)
         path = QPainterPath()
-        for seg_idx in seg_indices:
-            path.addPath(bezier_path([model.segments[seg_idx].bezier], closed=False))
+        for line in lines:
+            path.addPath(bezier_path([drawing.bezier(line)], closed=False))
         self.stroke.setPath(path)
+        self.stroke.setPos(_point(offset))
         self.stroke.show()
 
 

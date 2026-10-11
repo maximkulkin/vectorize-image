@@ -7,20 +7,23 @@ The scene holds two things, bottom to top:
                 document (see document_items)
     overlays    whatever the active tool adds (see add_overlay)
 
-Tools drive it through a small interface -- adding and removing their own
-overlay items, and converting on-screen distances to scene units -- rather
-than reaching into the scene themselves. `document_item` is an attribute
+Tools drive it through a small interface -- the current drawing's editing
+decorations and move preview, adding and removing their own overlay
+items, and converting on-screen distances to scene units -- rather than
+reaching into the scene themselves. `document_item` is an attribute
 for inspection (e.g. by tests), not for tools to modify.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QWidget
 
-from ..document import Document
+from ..document import Document, Point, VectorDrawing
+from ..typedefs import PointLike
 from .document_items import DocumentItem, VectorStyle
 from .widgets import ZoomableGraphicsView
 
@@ -46,7 +49,28 @@ class Canvas(ZoomableGraphicsView):
 
     def set_vector_style(self, style: VectorStyle) -> None:
         """How every vector drawing in the document is drawn."""
-        self.document_item.set_vector_style(style)
+        self.document_item.set_view(replace(self.document_item.view, style=style))
+
+    def set_editing(self, outline: bool, controls: bool = False) -> None:
+        """Decorate the current drawing for a drawing tool: its lines and
+        points always shown (`outline`), and its control points too
+        (`controls`). See VectorView."""
+        self.document_item.set_view(
+            replace(self.document_item.view, outline_current=outline, show_controls=controls)
+        )
+
+    # ------------------------------------------------------- move preview
+
+    def preview_move(self, drawing: VectorDrawing, points: frozenset[Point], delta: PointLike) -> None:
+        """Show `points` of `drawing` moved by `delta`, without moving them."""
+        item = self.document_item.item_for(drawing)
+        if item is not None:
+            item.set_move_preview(points, delta)
+
+    def end_move_preview(self, drawing: VectorDrawing) -> None:
+        item = self.document_item.item_for(drawing)
+        if item is not None:
+            item.clear_move_preview()
 
     # ----------------------------------------------------------- overlays
 
