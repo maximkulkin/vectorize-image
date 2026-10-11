@@ -8,16 +8,21 @@ signals of its parts rather than being told to refresh.
 """
 
 from .document import Document, InsertLayer, Item, Layer, MoveLayer, RemoveLayer, RenameLayer
+from .history import Batch, Command, History, Insert, Remove, Translate
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .selection import Selection
 from .vector import BezierCurve, Element, Fragment, Line, Point, Polygon, VectorDrawing
 
 __all__ = [
+    "Batch",
     "BezierCurve",
+    "Command",
     "Document",
     "Element",
     "Fragment",
+    "History",
+    "Insert",
     "InsertLayer",
     "Item",
     "Layer",
@@ -27,8 +32,10 @@ __all__ = [
     "Point",
     "Polygon",
     "RasterImage",
+    "Remove",
     "RemoveLayer",
     "RenameLayer",
     "Selection",
+    "Translate",
     "VectorDrawing",
 ]
