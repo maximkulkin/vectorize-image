@@ -272,3 +272,21 @@ def test_ensure_current_drawing_makes_what_is_missing() -> None:
     document.current_layer = other
     assert document.ensure_current_drawing() is not drawing
     assert len(other.items) == 1
+
+
+def test_selection_follows_the_current_drawing() -> None:
+    drawing_a, drawing_b = VectorDrawing(), VectorDrawing()
+    a, b = Layer("a", [drawing_a]), Layer("b")
+    document = Document([a, b])
+    assert document.selection.drawing is None  # b is current, with no drawing
+
+    b.items.append(drawing_b)
+    assert document.selection.drawing is drawing_b
+    point = drawing_b.add_point((1, 1))
+    document.selection.set_items({point})
+
+    document.current_layer = a
+    assert document.selection.drawing is drawing_a and not document.selection
+
+    b.items.append(VectorDrawing())  # not the current layer: no effect
+    assert document.selection.drawing is drawing_a

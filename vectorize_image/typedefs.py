@@ -20,8 +20,6 @@ type AnchorHandle = tuple[Literal["anchor"], int]  # ("anchor", node_id)
 type ControlHandle = tuple[Literal["control"], int, int]  # ("control", segment_index, 1 | 2)
 type Handle = AnchorHandle | ControlHandle
 
-# Selection granularity, and what one selected item is in each mode: a
-# Handle ("points"), a segment index ("curves"), or a representative node id
-# of a connected component ("contours").
-type SelectionMode = Literal["points", "curves", "contours"]
-type SelectionItem = Handle | int
+# What the Edit tool selects: a vector drawing's points (ends and control
+# points alike), its lines, or its polygons.
+type SelectionMode = Literal["points", "lines", "polygons"]

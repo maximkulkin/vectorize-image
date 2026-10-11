@@ -106,6 +106,18 @@ class MainWindow(QMainWindow):
     trace_tool_action: QAction
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
+    points_mode_action: QAction
+    lines_mode_action: QAction
+    polygons_mode_action: QAction
+    _selection_mode_actions: tuple[QAction, ...]
+    _selection_action_group: QActionGroup
+    move_select_action: QAction
+    box_select_action: QAction
+    paint_select_action: QAction
+    _select_tool_actions: tuple[QAction, ...]
+    _select_tool_action_group: QActionGroup
+    _selection_toolbar_separator: QAction
+    _select_toolbar_separator: QAction
     canvas: Canvas
     layers_panel: LayersPanel
     layers_dock: QDockWidget
@@ -141,6 +153,7 @@ class MainWindow(QMainWindow):
         self.image: RasterImage | None = None
         self.auto_trace: VectorDrawing | None = None
         self.document.history.changed.connect(self._on_document_changed)
+        self.document.selection.changed.connect(self._on_selection_changed)
         self.document.current_layer_changed.connect(self._on_document_changed)
         self.document.layers.inserted.connect(self._on_layer_inserted)
         self.document.layers.removed.connect(self._on_layer_removed)
@@ -198,6 +211,7 @@ class MainWindow(QMainWindow):
         self.delete_action = QAction("&Delete Selection", self)
         self.delete_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Delete), QKeySequence(Qt.Key.Key_Backspace)])
         self.delete_action.setEnabled(False)
+        self.delete_action.triggered.connect(self._delete_selection)
 
         self.auto_tool_action = QAction(themed_icon("autotrace"), "&AutoTrace", self)
         self.auto_tool_action.setCheckable(True)
@@ -217,6 +231,59 @@ class MainWindow(QMainWindow):
         for action in (self.auto_tool_action, self.trace_tool_action, self.edit_tool_action):
             self._tool_action_group.addAction(action)
         _when_checked(self.auto_tool_action, lambda: self._set_tool(self.auto_tool))
+        _when_checked(self.trace_tool_action, lambda: self._set_tool(self.trace_tool))
+        _when_checked(self.edit_tool_action, lambda: self._set_tool(self.edit_tool))
+
+        self.points_mode_action = QAction(themed_icon("edit_points"), "Edit &points", self)
+        self.points_mode_action.setCheckable(True)
+        self.points_mode_action.setChecked(True)
+        self.points_mode_action.setShortcut(QKeySequence(Qt.Key.Key_1))
+        self.points_mode_action.setToolTip("Edit points (1)")
+        self.lines_mode_action = QAction(themed_icon("edit_lines"), "Edit &lines", self)
+        self.lines_mode_action.setCheckable(True)
+        self.lines_mode_action.setShortcut(QKeySequence(Qt.Key.Key_2))
+        self.lines_mode_action.setToolTip("Edit lines (2)")
+        self.polygons_mode_action = QAction(themed_icon("edit_polygons"), "Edit p&olygons", self)
+        self.polygons_mode_action.setCheckable(True)
+        self.polygons_mode_action.setShortcut(QKeySequence(Qt.Key.Key_3))
+        self.polygons_mode_action.setToolTip("Edit polygons (3)")
+
+        self._selection_mode_actions = (
+            self.points_mode_action,
+            self.lines_mode_action,
+            self.polygons_mode_action,
+        )
+        self._selection_action_group = QActionGroup(self)
+        self._selection_action_group.setExclusive(True)
+        for action in self._selection_mode_actions:
+            self._selection_action_group.addAction(action)
+        _when_checked(self.points_mode_action, lambda: self.document.selection.set_mode("points"))
+        _when_checked(self.lines_mode_action, lambda: self.document.selection.set_mode("lines"))
+        _when_checked(self.polygons_mode_action, lambda: self.document.selection.set_mode("polygons"))
+
+        self.move_select_action = QAction(themed_icon("move"), "&Move", self)
+        self.move_select_action.setCheckable(True)
+        self.move_select_action.setChecked(True)
+        self.move_select_action.setToolTip("Move: click to select, drag a selected item to move it")
+        self.box_select_action = QAction(themed_icon("select_box"), "&Box Select", self)
+        self.box_select_action.setCheckable(True)
+        self.box_select_action.setToolTip("Box Select: drag a rectangle to select anything it touches")
+        self.paint_select_action = QAction(themed_icon("select_paint"), "&Paint Select", self)
+        self.paint_select_action.setCheckable(True)
+        self.paint_select_action.setToolTip("Paint Select: hold and drag a brush circle to select anything it touches")
+
+        self._select_tool_actions = (
+            self.move_select_action,
+            self.box_select_action,
+            self.paint_select_action,
+        )
+        self._select_tool_action_group = QActionGroup(self)
+        self._select_tool_action_group.setExclusive(True)
+        for action in self._select_tool_actions:
+            self._select_tool_action_group.addAction(action)
+        _when_checked(self.move_select_action, lambda: self._set_select_tool("move"))
+        _when_checked(self.box_select_action, lambda: self._set_select_tool("box"))
+        _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint"))
 
         fit_action = QAction(themed_icon("fit"), "&Fit to Window", self)
         fit_action.setShortcut("Ctrl+0")
@@ -273,6 +340,13 @@ class MainWindow(QMainWindow):
         tools_toolbar.addAction(self.auto_tool_action)
         tools_toolbar.addAction(self.trace_tool_action)
         tools_toolbar.addAction(self.edit_tool_action)
+        self._selection_toolbar_separator = tools_toolbar.addSeparator()
+        for action in self._selection_mode_actions:
+            tools_toolbar.addAction(action)
+        self._select_toolbar_separator = tools_toolbar.addSeparator()
+        for action in self._select_tool_actions:
+            tools_toolbar.addAction(action)
+        self._set_selection_actions_visible(False)
 
     def _build_canvas(self) -> QWidget:
         self.canvas = Canvas(self.document)
@@ -500,10 +574,33 @@ class MainWindow(QMainWindow):
             return
         self.tool.deactivate()
         self.tool = tool
+
+        self._set_selection_actions_visible(tool is self.edit_tool)
+
         tool.activate()
         self.canvas.set_interaction_handler(tool if tool.captures_mouse else None)
         if tool is self.auto_tool:
             self._run_vectorize()
+
+        self._update_delete_action()
+
+    def _set_selection_actions_visible(self, visible: bool) -> None:
+        self._selection_toolbar_separator.setVisible(visible)
+        for action in self._selection_mode_actions:
+            action.setVisible(visible)
+        self._select_toolbar_separator.setVisible(visible)
+        for action in self._select_tool_actions:
+            action.setVisible(visible)
+
+    def _set_select_tool(self, name: str) -> None:
+        self.edit_tool.set_select_tool(name)
+        self._update_paint_radius_visibility()
+
+    # ------------------------------------------------- document reactions
+
+    def _on_selection_changed(self) -> None:
+        self._update_delete_action()
+        self._update_manual_status()
 
     def _update_save_enabled(self) -> None:
         self.save_action.setEnabled(

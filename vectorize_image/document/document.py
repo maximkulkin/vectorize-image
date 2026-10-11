@@ -12,6 +12,7 @@ from ..signals import Signal, disconnect
 from .history import Command, History
 from .observable_list import ObservableList
 from .raster import RasterImage
+from .selection import Selection
 from .vector import VectorDrawing
 
 type Item = RasterImage | VectorDrawing
@@ -83,6 +84,7 @@ class Document:
     def __init__(self, layers: Iterable[Layer] = ()) -> None:
         self.layers: Final[ObservableList[Layer]] = ObservableList(layers)
         self.history: Final[History] = History()
+        self.selection: Final[Selection] = Selection()
         self._current_layer: Layer | None = None
         self.layers.inserted.connect(self._on_layer_inserted)
         self.layers.removed.connect(self._on_layer_removed)
