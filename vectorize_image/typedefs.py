@@ -14,6 +14,9 @@ type Bezier = list[np.ndarray]  # a cubic: [P0, P1, P2, P3]
 type Contour = list[Bezier]  # closed: each bezier's P3 is the next one's P0
 type Shape = list[Contour]  # an outer contour followed by its holes
 
-# What the Edit tool selects: a vector drawing's points (ends and control
+# What edit mode selects: a vector drawing's points (ends and control
 # points alike), its lines, or its polygons.
-type SelectionMode = Literal["points", "lines", "polygons"]
+type ElementMode = Literal["points", "lines", "polygons"]
+# What the selection selects: whole items of a layer (object mode), or one
+# of edit mode's kinds of element of a drawing.
+type SelectionMode = Literal["objects"] | ElementMode

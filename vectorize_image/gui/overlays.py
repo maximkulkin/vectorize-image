@@ -1,6 +1,7 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
-curve and snap ring, the Edit tool's hover/drag highlights, and the box and
-brush of the area select tools. Built from stock Qt graphics items so their
+curve and snap ring, the Edit tool's hover/drag highlights, the box,
+guides and brush of the area select tools, and object mode's boxes around
+items. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
 cosmetic pens, or ignores the view transform entirely, so it keeps a fixed
 on-screen size at any zoom.
@@ -8,10 +9,20 @@ on-screen size at any zoom.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import override
+
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPen
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsPathItem,
+    QGraphicsRectItem,
+    QStyleOptionGraphicsItem,
+    QWidget,
+)
 
 from ..document import Element, Line, Point, Polygon, VectorDrawing
 from ..typedefs import Bezier, PointLike
@@ -22,6 +33,7 @@ ACTIVE_COLOR = QColor(255, 214, 0)  # where the Pen's chain goes on from; what a
 SNAP_HIGHLIGHT_COLOR = QColor(0, 229, 255)
 HOVER_COLOR = SNAP_HIGHLIGHT_COLOR
 AREA_SELECT_COLOR = QColor(33, 150, 243)
+GUIDE_BACKING_COLOR = QColor(255, 255, 255, 200)  # under the guides' dashes, to show on dark areas too
 
 SNAP_HIGHLIGHT_RADIUS_PX = 9.0
 HANDLE_HIGHLIGHT_RADIUS_PX = 7.0
@@ -119,6 +131,67 @@ class BoxOutline(QGraphicsRectItem):
     def show_box(self, corner1: PointLike, corner2: PointLike) -> None:
         self.setRect(QRectF(_point(corner1), _point(corner2)).normalized())
         self.show()
+
+
+class CursorGuides(QGraphicsPathItem):
+    """The Box Select tool's guides: a horizontal and a vertical line
+    through the cursor, for lining up a box's corners. Drawn in screen
+    space, so zooming doesn't change how far they reach: blue dashes over
+    a light line, so they show on light and dark areas alike, and not
+    antialiased, so each is one crisp pixel wide."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+        # Not cosmetic: with the view transform ignored, a plain pen is
+        # already in screen pixels, and unlike a cosmetic one it's one
+        # *logical* pixel wide (not a hairline) on a high-DPI screen.
+        self.setPen(QPen(AREA_SELECT_COLOR, 1.0, Qt.PenStyle.DashLine))
+        self._backing_pen: QPen = QPen(GUIDE_BACKING_COLOR, 1.0)
+        self._reach: tuple[float, float] | None = None
+        self.hide()
+
+    def show_at(self, pos: PointLike, reach_px: tuple[float, float]) -> None:
+        """Cross at `pos`, the lines reaching `reach_px` (width, height) on
+        screen each way -- the view's size spans it from anywhere in it."""
+        if reach_px != self._reach:
+            self._reach = reach_px
+            width, height = reach_px
+            path = QPainterPath()
+            path.moveTo(-width, 0.0)
+            path.lineTo(width, 0.0)
+            path.moveTo(0.0, -height)
+            path.lineTo(0.0, height)
+            self.setPath(path)
+        self.setPos(_point(pos))
+        self.show()
+
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.strokePath(self.path(), self._backing_pen)
+        painter.strokePath(self.path(), self.pen())
+        painter.restore()
+
+
+class ItemBoxes(QGraphicsPathItem):
+    """Object mode's highlight of whole items: a box around each."""
+
+    def __init__(self, color: QColor, width: float) -> None:
+        super().__init__()
+        self.setPen(cosmetic_pen(color, width))
+        self.setBrush(Qt.BrushStyle.NoBrush)
+        self.hide()
+
+    def show_boxes(self, boxes: Iterable[tuple[PointLike, PointLike]], pad: float) -> None:
+        """A box from each (top-left, bottom-right) pair, grown by `pad` on
+        every side -- or nothing, if there are none."""
+        path = QPainterPath()
+        for corner1, corner2 in boxes:
+            path.addRect(QRectF(_point(corner1), _point(corner2)).normalized().adjusted(-pad, -pad, pad, pad))
+        self.setPath(path)
+        self.setVisible(not path.isEmpty())
 
 
 class BrushOutline(QGraphicsEllipseItem):

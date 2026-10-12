@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
+  <!-- An arrowhead pointing up-left: a triangle with a smaller one cut out of its back. -->
+  <path d="M5.2 5.2 L16.8 10 L11.6 11.6 L10 16.8 Z" fill="#464646" stroke="#464646" stroke-width="1" stroke-linejoin="round"/>
+</svg>

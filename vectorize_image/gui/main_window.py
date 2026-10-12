@@ -4,7 +4,11 @@ panel and the settings around it.
 Opening an image makes a fresh document of two layers, bottom to top:
 "Image", holding the picture, and "Drawing", an empty vector drawing that
 starts out as the current layer. Pen and Edit work on the current layer's
-drawing.
+drawing. The select tools -- Tweak (which also drags), Box and Paint --
+and Move work in either mode: object mode, where they select and move whole drawings and
+images of the current layer, or edit mode, where they select and move the current drawing's
+points, lines or polygons. Edit Mode toggles on and off -- Tab,
+as in Blender, goes into it and back out to object mode.
 
 The document is the source of truth: the canvas and the Layers panel show
 it, every change to it goes through its undo history, and Save exports
@@ -16,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypedDict
 
+import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
 from PySide6.QtWidgets import (
@@ -28,10 +33,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -39,12 +46,12 @@ from PySide6.QtWidgets import (
 from .. import binarize, simplify, svgwrite, tracing
 from ..document import Document, Layer, RasterImage, Remove, VectorDrawing
 from ..signals import disconnect
-from ..typedefs import Shape
+from ..typedefs import ElementMode, Shape
 from .canvas import Canvas
 from .document_items import VectorStyle
 from .layers_panel import LayersPanel
 from .themed_icons import themed_icon
-from .tools import PAINT_SELECT_DEFAULT_RADIUS_PX, EditTool, Tool, TraceTool
+from .tools import PAINT_SELECT_DEFAULT_RADIUS_PX, EditTool, ObjectTool, Tool, TraceTool
 from .widgets import SliderSpinRow
 
 DEBOUNCE_MS = 150  # how long the edge settings must sit still before the edges are retraced
@@ -101,13 +108,13 @@ class MainWindow(QMainWindow):
     polygons_mode_action: QAction
     _selection_mode_actions: tuple[QAction, ...]
     _selection_action_group: QActionGroup
-    move_select_action: QAction
+    tweak_action: QAction
     box_select_action: QAction
     paint_select_action: QAction
+    move_tool_action: QAction
     _select_tool_actions: tuple[QAction, ...]
-    _select_tool_action_group: QActionGroup
+    select_tool_button: QToolButton
     _selection_toolbar_separator: QAction
-    _select_toolbar_separator: QAction
     canvas: Canvas
     layers_panel: LayersPanel
     layers_dock: QDockWidget
@@ -123,6 +130,7 @@ class MainWindow(QMainWindow):
     color_button: QPushButton
     wireframe_checkbox: QCheckBox
     # Tools, created by _build_tools.
+    object_tool: ObjectTool
     trace_tool: TraceTool
     edit_tool: EditTool
     tool: Tool  # the active one
@@ -140,8 +148,10 @@ class MainWindow(QMainWindow):
         # traced from.
         self.document: Document = Document()
         self.image: RasterImage | None = None
+        self._edge_contours: list[np.ndarray] = []  # the image's edges, in its own pixels (see _refresh_edge_source)
         self.document.history.changed.connect(self._on_document_changed)
         self.document.selection.changed.connect(self._on_selection_changed)
+        self.document.selection.mode_changed.connect(self._on_selection_mode_changed)
         self.document.current_layer_changed.connect(self._on_document_changed)
         self.document.layers.inserted.connect(self._on_layer_inserted)
         self.document.layers.removed.connect(self._on_layer_removed)
@@ -196,20 +206,20 @@ class MainWindow(QMainWindow):
         self.delete_action.setEnabled(False)
         self.delete_action.triggered.connect(self._delete_selection)
 
-        self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
-        self.trace_tool_action.setCheckable(True)
-        self.trace_tool_action.setChecked(True)
-        self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge, in the current layer")
-        self.edit_tool_action = QAction(themed_icon("edit"), "&Edit", self)
+        # The mode -- object, or with Edit Mode on, edit -- is the
+        # selection's: "objects", to select whole items, or "points",
+        # "lines" or "polygons" of the current drawing, as the checked one
+        # of those three actions says. The actions set it, and follow it.
+        self.edit_tool_action = QAction(themed_icon("edit"), "&Edit Mode", self)
         self.edit_tool_action.setCheckable(True)
-        self.edit_tool_action.setToolTip("Edit: select and move or delete points, lines, or polygons in the current layer")
-
-        self._tool_action_group = QActionGroup(self)
-        self._tool_action_group.setExclusive(True)
-        for action in (self.trace_tool_action, self.edit_tool_action):
-            self._tool_action_group.addAction(action)
-        _when_checked(self.trace_tool_action, lambda: self._set_tool(self.trace_tool))
-        _when_checked(self.edit_tool_action, lambda: self._set_tool(self.edit_tool))
+        self.edit_tool_action.setShortcut(QKeySequence(Qt.Key.Key_Tab))
+        self.edit_tool_action.setToolTip(
+            (
+                "Edit Mode (Tab): select and move or delete points, lines, or polygons in the current layer; "
+                "Tab again goes back to object mode, to select and move whole drawings and images"
+            )
+        )
+        self.edit_tool_action.toggled.connect(self._on_edit_mode_toggled)
 
         self.points_mode_action = QAction(themed_icon("edit_points"), "Edit &points", self)
         self.points_mode_action.setCheckable(True)
@@ -234,33 +244,62 @@ class MainWindow(QMainWindow):
         self._selection_action_group.setExclusive(True)
         for action in self._selection_mode_actions:
             self._selection_action_group.addAction(action)
-        _when_checked(self.points_mode_action, lambda: self.document.selection.set_mode("points"))
-        _when_checked(self.lines_mode_action, lambda: self.document.selection.set_mode("lines"))
-        _when_checked(self.polygons_mode_action, lambda: self.document.selection.set_mode("polygons"))
+        _when_checked(self.points_mode_action, lambda: self._on_element_mode_chosen("points"))
+        _when_checked(self.lines_mode_action, lambda: self._on_element_mode_chosen("lines"))
+        _when_checked(self.polygons_mode_action, lambda: self._on_element_mode_chosen("polygons"))
 
-        self.move_select_action = QAction(themed_icon("move"), "&Move", self)
-        self.move_select_action.setCheckable(True)
-        self.move_select_action.setChecked(True)
-        self.move_select_action.setToolTip("Move: click to select, drag a selected item to move it")
+        # The tool: one of the select tools, Move -- each in either mode --
+        # or Pen; always one of them.
+        self.tweak_action = QAction(themed_icon("tweak"), "&Tweak", self)
+        self.tweak_action.setCheckable(True)
+        self.tweak_action.setChecked(True)
+        self.tweak_action.setShortcut(QKeySequence(Qt.Key.Key_W))
+        self.tweak_action.setToolTip(
+            "Tweak (W): click to select, shift-click for more; drag something to move it (with the rest of the selection)"
+        )
         self.box_select_action = QAction(themed_icon("select_box"), "&Box Select", self)
         self.box_select_action.setCheckable(True)
-        self.box_select_action.setToolTip("Box Select: drag a rectangle to select anything it touches")
+        self.box_select_action.setShortcut(QKeySequence(Qt.Key.Key_B))
+        self.box_select_action.setToolTip("Box Select (B): drag a rectangle to select anything it touches")
         self.paint_select_action = QAction(themed_icon("select_paint"), "&Paint Select", self)
         self.paint_select_action.setCheckable(True)
-        self.paint_select_action.setToolTip("Paint Select: hold and drag a brush circle to select anything it touches")
+        self.paint_select_action.setShortcut(QKeySequence(Qt.Key.Key_C))
+        self.paint_select_action.setToolTip("Paint Select (C): hold and drag a brush circle to select anything it touches")
 
         self._select_tool_actions = (
-            self.move_select_action,
+            self.tweak_action,
             self.box_select_action,
             self.paint_select_action,
         )
-        self._select_tool_action_group = QActionGroup(self)
-        self._select_tool_action_group.setExclusive(True)
-        for action in self._select_tool_actions:
-            self._select_tool_action_group.addAction(action)
-        _when_checked(self.move_select_action, lambda: self._set_select_tool("move"))
-        _when_checked(self.box_select_action, lambda: self._set_select_tool("box"))
-        _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint"))
+        # For their shortcuts: the dropdown menu they're in is a window of its own.
+        self.addActions(list(self._select_tool_actions))
+        self.move_tool_action = QAction(themed_icon("move"), "&Move", self)
+        self.move_tool_action.setCheckable(True)
+        self.move_tool_action.setShortcut(QKeySequence(Qt.Key.Key_G))
+        self.move_tool_action.setToolTip("Move (G): drag anywhere to move the selection, or drag something unselected to move it")
+        self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
+        self.trace_tool_action.setCheckable(True)
+        self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge, in the current layer")
+
+        self._tool_action_group = QActionGroup(self)
+        self._tool_action_group.setExclusive(True)
+        for action in (*self._select_tool_actions, self.move_tool_action, self.trace_tool_action):
+            self._tool_action_group.addAction(action)
+        _when_checked(self.tweak_action, lambda: self._set_select_tool("tweak", self.tweak_action))
+        _when_checked(self.box_select_action, lambda: self._set_select_tool("box", self.box_select_action))
+        _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint", self.paint_select_action))
+        _when_checked(self.move_tool_action, lambda: self._set_select_tool("move"))
+        self.trace_tool_action.toggled.connect(self._update_tool)
+
+        # The select tools share one toolbar button, showing the one in use,
+        # with the others in its menu.
+        self.select_tool_button = QToolButton()
+        self.select_tool_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.select_tool_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        select_menu = QMenu(self.select_tool_button)
+        select_menu.addActions(list(self._select_tool_actions))
+        self.select_tool_button.setMenu(select_menu)
+        self.select_tool_button.setDefaultAction(self.tweak_action)
 
         fit_action = QAction(themed_icon("fit"), "&Fit to Window", self)
         fit_action.setShortcut("Ctrl+0")
@@ -314,13 +353,13 @@ class MainWindow(QMainWindow):
         self.addToolBarBreak()
         tools_toolbar = self.addToolBar("Tools")
         tools_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        tools_toolbar.addWidget(self.select_tool_button)
+        tools_toolbar.addAction(self.move_tool_action)
         tools_toolbar.addAction(self.trace_tool_action)
+        tools_toolbar.addSeparator()
         tools_toolbar.addAction(self.edit_tool_action)
         self._selection_toolbar_separator = tools_toolbar.addSeparator()
         for action in self._selection_mode_actions:
-            tools_toolbar.addAction(action)
-        self._select_toolbar_separator = tools_toolbar.addSeparator()
-        for action in self._select_tool_actions:
             tools_toolbar.addAction(action)
         self._set_selection_actions_visible(False)
 
@@ -443,7 +482,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Could not open image", f"Failed to load:\n{path}\n\n{exc}")
             return
 
+        if self.image is not None:
+            disconnect(self.image.moved, self._apply_edge_source)
         self.image = image
+        image.moved.connect(self._apply_edge_source)
         layers = self.document.layers
         for layer in list(layers):
             layers.remove(layer)
@@ -536,6 +578,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_paint_radius_changed(self, value: float) -> None:
+        self.object_tool.paint_tool.set_radius(value)
         self.edit_tool.paint_tool.set_radius(value)
 
     def _clear_current_drawing(self) -> None:
@@ -547,13 +590,60 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- tools
 
     def _build_tools(self) -> None:
+        self.object_tool = ObjectTool(self.document, self.canvas)
         self.trace_tool = TraceTool(self.document, self.canvas)
         self.edit_tool = EditTool(self.document, self.canvas)
+        self.object_tool.paint_tool.set_radius(self.paint_radius_row.value())
         self.edit_tool.paint_tool.set_radius(self.paint_radius_row.value())
-        for tool in (self.trace_tool, self.edit_tool):
+        for tool in (self.object_tool, self.trace_tool, self.edit_tool):
             tool.status_changed.connect(self._update_status)
-        self.tool = self.trace_tool
+        self._editing: bool = self.document.selection.mode != "objects"
+        self.tool = self.edit_tool if self._editing else self.object_tool
         self._show_tool(self.tool)
+
+    def _element_mode(self) -> ElementMode:
+        """The edit mode to be in: whichever of points, lines or polygons is checked."""
+        if self.lines_mode_action.isChecked():
+            return "lines"
+        if self.polygons_mode_action.isChecked():
+            return "polygons"
+        return "points"
+
+    def _on_edit_mode_toggled(self, edit: bool) -> None:
+        self.document.selection.set_mode(self._element_mode() if edit else "objects")
+
+    def _on_element_mode_chosen(self, mode: ElementMode) -> None:
+        # Out of edit mode, it's just which one to go into.
+        if self.document.selection.mode != "objects":
+            self.document.selection.set_mode(mode)
+
+    def _on_selection_mode_changed(self, mode: str) -> None:
+        """Make the mode actions show the selection's mode -- whoever set
+        it -- and switch to its mode tool. Into edit mode or out of it,
+        the tool starts over as Tweak."""
+        editing = mode != "objects"
+        for action, element_mode in zip(self._selection_mode_actions, ("points", "lines", "polygons")):
+            if element_mode == mode:
+                action.setChecked(True)
+        if self.edit_tool_action.isChecked() != editing:
+            self.edit_tool_action.setChecked(editing)
+        if editing != self._editing:
+            self._editing = editing
+            self.tweak_action.setChecked(True)
+        self._update_tool()
+
+    def _update_tool(self) -> None:
+        """Activate whatever the tool actions and the selection's mode say:
+        Pen, or else the mode's tool (which hands its input to the select
+        tool in use)."""
+        editing = self.document.selection.mode != "objects"
+        self._set_selection_actions_visible(editing)
+        if self.trace_tool_action.isChecked():
+            self._set_tool(self.trace_tool)
+        elif editing:
+            self._set_tool(self.edit_tool)
+        else:
+            self._set_tool(self.object_tool)
 
     def _set_tool(self, tool: Tool) -> None:
         if tool is self.tool:
@@ -564,7 +654,6 @@ class MainWindow(QMainWindow):
 
     def _show_tool(self, tool: Tool) -> None:
         """Activate `tool`, and fit the window around it."""
-        self._set_selection_actions_visible(tool is self.edit_tool)
         self.manual_hint_label.setText(tool.hint)
         tool.activate()
         self.canvas.set_interaction_handler(tool if tool.captures_mouse else None)
@@ -576,18 +665,19 @@ class MainWindow(QMainWindow):
         self._selection_toolbar_separator.setVisible(visible)
         for action in self._selection_mode_actions:
             action.setVisible(visible)
-        self._select_toolbar_separator.setVisible(visible)
-        for action in self._select_tool_actions:
-            action.setVisible(visible)
 
-    def _set_select_tool(self, name: str) -> None:
+    def _set_select_tool(self, name: str, select_action: QAction | None = None) -> None:
+        """Use `name`'s tool -- a select tool, from `select_action`, or
+        Move -- in both modes, and stop using Pen, if that's what was on."""
+        if select_action is not None:
+            self.select_tool_button.setDefaultAction(select_action)
+        self.object_tool.set_select_tool(name)
         self.edit_tool.set_select_tool(name)
+        self._update_tool()
         self._update_paint_radius_visibility()
 
     def _update_paint_radius_visibility(self) -> None:
-        self.paint_radius_widget.setVisible(
-            self.tool is self.edit_tool and self.edit_tool.select_tool is self.edit_tool.paint_tool
-        )
+        self.paint_radius_widget.setVisible(self.paint_select_action.isChecked())
 
     # ------------------------------------------------- document reactions
 
@@ -656,8 +746,14 @@ class MainWindow(QMainWindow):
         # since a fitted segment's tangent is estimated from just the one
         # point adjacent to its endpoint, an unsimplified spike there is
         # enough to send the whole curve in a wildly wrong direction.
-        contours = [
+        self._edge_contours = [
             simplify.simplify_closed_polygon(c, EDGE_SIMPLIFY_TOLERANCE)
             for c in tracing.trace_bitmap(bitmap)
         ]
-        self.trace_tool.set_edge_source(contours)
+        self._apply_edge_source()
+
+    def _apply_edge_source(self) -> None:
+        """Give Pen the image's edges where the image is placed -- again
+        whenever it moves, without retracing them."""
+        offset = np.zeros(2) if self.image is None else self.image.position
+        self.trace_tool.set_edge_source([contour + offset for contour in self._edge_contours])

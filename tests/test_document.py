@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from vectorize_image.document import Document, Layer, ObservableList, RasterImage, VectorDrawing
+from vectorize_image.document import Document, Layer, MoveItems, ObservableList, RasterImage, VectorDrawing
 
 
 @pytest.fixture
@@ -102,6 +102,23 @@ def test_raster_image_is_immutable() -> None:
         image.pixels[0, 0] = 1
     with pytest.raises(ValueError):
         image.grayscale[0, 0] = 1
+
+
+def test_raster_image_moves_and_says_so() -> None:
+    image = RasterImage(np.zeros((2, 3, 4), dtype=np.uint8))
+    assert image.position.tolist() == [0.0, 0.0]
+    moves: list[list[float]] = []
+
+    def on_moved() -> None:
+        moves.append(image.position.tolist())
+
+    image.moved.connect(on_moved)
+    image.move_to((5, 6))
+    image.move_to((5, 6))  # already there: silent
+
+    assert moves == [[5.0, 6.0]]
+    with pytest.raises(ValueError):
+        image.position[0] = 1
 
 
 def test_raster_image_needs_rgba() -> None:
@@ -290,3 +307,78 @@ def test_selection_follows_the_current_drawing() -> None:
 
     b.items.append(VectorDrawing())  # not the current layer: no effect
     assert document.selection.drawing is drawing_a
+
+
+# ----------------------------------------------------------------- objects
+
+
+def _image() -> RasterImage:
+    return RasterImage(np.zeros((2, 3, 4), dtype=np.uint8))
+
+
+def test_layer_of_finds_an_items_layer() -> None:
+    image, drawing = _image(), VectorDrawing()
+    a, b = Layer("a", [image]), Layer("b", [drawing])
+    document = Document([a, b])
+
+    assert document.layer_of(image) is a
+    assert document.layer_of(drawing) is b
+    assert document.layer_of(VectorDrawing()) is None
+
+
+def test_move_items_moves_drawings_and_images_undoably() -> None:
+    image, drawing = _image(), VectorDrawing()
+    p, q = drawing.add_point((1, 2)), drawing.add_point((3, 4))
+    document = Document([Layer("a", [image, drawing])])
+
+    document.history.push(MoveItems([image, drawing], (10, 20), "Move Objects"))
+
+    assert image.position.tolist() == [10.0, 20.0]
+    assert drawing.position(p).tolist() == [11.0, 22.0]
+    assert drawing.position(q).tolist() == [13.0, 24.0]
+    assert document.history.undo_text() == "Move Objects"
+
+    document.history.undo()
+    assert image.position.tolist() == [0.0, 0.0]
+    assert drawing.position(p).tolist() == [1.0, 2.0]
+    document.history.redo()
+    assert image.position.tolist() == [10.0, 20.0]
+
+
+def test_selection_selects_objects_of_the_current_layer() -> None:
+    image, drawing, other = _image(), VectorDrawing(), VectorDrawing()
+    a, b = Layer("a", [image, drawing]), Layer("b", [other])
+    document = Document([a, b])
+    selection = document.selection
+    assert selection.layer is b  # the current one
+
+    selection.set_items({other, image})  # only what's in the layer counts
+    assert selection.items == {other}
+
+    document.current_layer = a  # another layer: starting from nothing
+    assert selection.layer is a and not selection
+    selection.set_items({image, drawing})
+    a.items.remove(drawing)
+    assert selection.items == {image}
+
+    document.layers.remove(a)  # the current layer goes: so does the selection
+    assert selection.layer is b and not selection
+
+
+def test_selecting_objects_toggles_and_announces_changes() -> None:
+    image, drawing = _image(), VectorDrawing()
+    document = Document([Layer("a", [image, drawing])])
+    selection = document.selection
+    changes: list[frozenset[object]] = []
+
+    def on_changed() -> None:
+        changes.append(frozenset(selection.items))
+
+    selection.changed.connect(on_changed)
+    selection.toggle(image)
+    selection.toggle(drawing)
+    selection.toggle(image)
+    selection.set_items({drawing})  # no change: silent
+    selection.clear()
+
+    assert changes == [frozenset({image}), frozenset({image, drawing}), frozenset({drawing}), frozenset()]

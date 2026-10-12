@@ -184,7 +184,8 @@ class Fragment:
         return bool(self.points or self.lines or self.polygons)
 
 
-def _frozen_point(value: PointLike) -> np.ndarray:
+def frozen_point(value: PointLike) -> np.ndarray:
+    """`value` as a read-only (2,) float array. Raises ValueError if it isn't an (x, y) point."""
     point = np.array(value, dtype=float)
     if point.shape != (2,):
         raise ValueError(f"expected an (x, y) point, got {value!r}")
@@ -294,7 +295,7 @@ class VectorDrawing:
 
     def add_point(self, position: PointLike) -> Point:
         point = Point()
-        self.insert(Fragment(points={point: _frozen_point(position)}))
+        self.insert(Fragment(points={point: frozen_point(position)}))
         return point
 
     def add_line(self, start: Point, end: Point) -> Line:
@@ -345,7 +346,7 @@ class VectorDrawing:
                     raise ValueError(f"{polygon!r} uses a line that's in neither the drawing nor the fragment")
 
         for point, position in fragment.points.items():
-            self._positions[point] = _frozen_point(position)
+            self._positions[point] = frozen_point(position)
             self._lines_using[point] = {}
         for line in fragment.lines:
             self._polygons_on[line] = {}
@@ -436,7 +437,7 @@ class VectorDrawing:
         for point, position in positions.items():
             if point not in self._positions:
                 raise KeyError(point)
-            points[point] = _frozen_point(position)
+            points[point] = frozen_point(position)
         if not points:
             return
         self._positions.update(points)
@@ -462,7 +463,7 @@ def shapes_fragment(shapes: Iterable[Shape]) -> tuple[Fragment, list[Polygon]]:
 
     def new_point(position: PointLike) -> Point:
         point = Point()
-        points[point] = _frozen_point(position)
+        points[point] = frozen_point(position)
         return point
 
     for shape in shapes:

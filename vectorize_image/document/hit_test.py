@@ -1,6 +1,6 @@
 """Finding a vector drawing's elements by position: what's under the
-cursor, and what an area (a box, a brush) touches. Queries only -- nothing
-here changes the drawing.
+cursor, and what an area (a box, a brush) touches -- and, for object
+mode, whole items. Queries only -- nothing here changes the document.
 
 Curves are tested by sampling them, closely enough for picking with a
 cursor; polygons by their boundary or, failing that, by what's inside.
@@ -8,14 +8,18 @@ cursor; polygons by their boundary or, failing that, by what's inside.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterable
+from typing import override
 
 import numpy as np
 
-from ..typedefs import Bezier, PointLike, SelectionMode
+from ..typedefs import Bezier, ElementMode, PointLike
+from .layer import Item, Layer
+from .raster import RasterImage
+from .selection import Selectable, Selection
 from .vector import Element, Line, Point, Polygon, VectorDrawing
 
-type Region = Callable[[np.ndarray], np.ndarray]  # (n, 2) positions -> (n,) bools: which are inside
 
 SAMPLES_PER_LINE = 21
 _T = np.linspace(0.0, 1.0, SAMPLES_PER_LINE)
@@ -84,7 +88,7 @@ def polygon_at(drawing: VectorDrawing, pos: PointLike, radius: float) -> Polygon
     return None
 
 
-def element_at(drawing: VectorDrawing, mode: SelectionMode, pos: PointLike, radius: float) -> Element | None:
+def element_at(drawing: VectorDrawing, mode: ElementMode, pos: PointLike, radius: float) -> Element | None:
     """What's under `pos`, at whatever granularity `mode` selects at."""
     match mode:
         case "points":
@@ -95,31 +99,111 @@ def element_at(drawing: VectorDrawing, mode: SelectionMode, pos: PointLike, radi
             return polygon_at(drawing, pos, radius)
 
 
+def selectable_at(selection: Selection, pos: PointLike, radius: float) -> Selectable | None:
+    """What `selection` could select at `pos`: an item of its layer, or
+    an element of its drawing, as its mode says."""
+    mode = selection.mode
+    if mode == "objects":
+        return None if selection.layer is None else item_at(selection.layer, pos, radius)
+    return None if selection.drawing is None else element_at(selection.drawing, mode, pos, radius)
+
+
+def drawing_at(drawing: VectorDrawing, pos: PointLike, radius: float) -> bool:
+    """Whether any of the drawing is at `pos`: a polygon, a line or a point."""
+    return (
+        polygon_at(drawing, pos, radius) is not None
+        or nearest_line(drawing, pos, radius) is not None
+        or nearest_point(drawing, pos, radius) is not None
+    )
+
+
+def item_at(layer: Layer, pos: PointLike, radius: float) -> Item | None:
+    """The topmost of a layer's items at `pos`, if it's visible: an image
+    `pos` is over, or a drawing with something of it there."""
+    if not layer.visible:
+        return None
+    for item in reversed(layer.items):
+        match item:
+            case RasterImage():
+                if box(*item_bounds(item)).touches_rect(pos, pos):
+                    return item
+            case VectorDrawing():
+                if drawing_at(item, pos, radius):
+                    return item
+    return None
+
+
+def item_bounds(item: Item) -> tuple[np.ndarray, np.ndarray]:
+    """The (top-left, bottom-right) corners of what an item covers. An
+    empty drawing covers nothing: both are the origin."""
+    match item:
+        case RasterImage():
+            return item.position, item.position + np.array(item.size, dtype=float)
+        case VectorDrawing():
+            if not item:
+                return np.zeros(2), np.zeros(2)
+            # Every point, control points included -- which contain each curve.
+            positions = np.array([item.position(point) for point in item.points])
+            return positions.min(axis=0), positions.max(axis=0)
+
+
 # ---------------------------------------------------------------- in an area
 
 
+class Region(ABC):
+    """An area of the document: a box, or a brush's circle."""
+
+    @abstractmethod
+    def __call__(self, points: np.ndarray) -> np.ndarray:
+        """Which of `points`, (n, 2), are inside: (n,) bools."""
+
+    @abstractmethod
+    def touches_rect(self, corner1: PointLike, corner2: PointLike) -> bool:
+        """Whether any of the axis-aligned rectangle between two opposite
+        corners is inside."""
+
+
+class _Box(Region):
+    def __init__(self, corner1: PointLike, corner2: PointLike) -> None:
+        self.low: np.ndarray = np.minimum(np.asarray(corner1, dtype=float), np.asarray(corner2, dtype=float))
+        self.high: np.ndarray = np.maximum(np.asarray(corner1, dtype=float), np.asarray(corner2, dtype=float))
+
+    @override
+    def __call__(self, points: np.ndarray) -> np.ndarray:
+        return np.all((self.low <= points) & (points <= self.high), axis=1)
+
+    @override
+    def touches_rect(self, corner1: PointLike, corner2: PointLike) -> bool:
+        other = _Box(corner1, corner2)
+        return bool(np.all(self.low <= other.high) and np.all(other.low <= self.high))
+
+
+class _Circle(Region):
+    def __init__(self, center: PointLike, radius: float) -> None:
+        self.center: np.ndarray = np.asarray(center, dtype=float)
+        self.radius: float = radius
+
+    @override
+    def __call__(self, points: np.ndarray) -> np.ndarray:
+        return np.linalg.norm(points - self.center, axis=1) <= self.radius
+
+    @override
+    def touches_rect(self, corner1: PointLike, corner2: PointLike) -> bool:
+        rect = _Box(corner1, corner2)
+        nearest = np.clip(self.center, rect.low, rect.high)
+        return float(np.linalg.norm(nearest - self.center)) <= self.radius
+
+
 def box(corner1: PointLike, corner2: PointLike) -> Region:
-    (x0, y0), (x1, y1) = np.asarray(corner1, dtype=float), np.asarray(corner2, dtype=float)
-    xmin, xmax = sorted((float(x0), float(x1)))
-    ymin, ymax = sorted((float(y0), float(y1)))
-
-    def region(points: np.ndarray) -> np.ndarray:
-        x, y = points[:, 0], points[:, 1]
-        return (xmin <= x) & (x <= xmax) & (ymin <= y) & (y <= ymax)
-
-    return region
+    """The box between two opposite corners, edges included."""
+    return _Box(corner1, corner2)
 
 
 def circle(center: PointLike, radius: float) -> Region:
-    c = np.asarray(center, dtype=float)
-
-    def region(points: np.ndarray) -> np.ndarray:
-        return np.linalg.norm(points - c, axis=1) <= radius
-
-    return region
+    return _Circle(center, radius)
 
 
-def elements_in(drawing: VectorDrawing, mode: SelectionMode, region: Region) -> set[Element]:
+def elements_in(drawing: VectorDrawing, mode: ElementMode, region: Region) -> set[Element]:
     """Every element of `mode`'s kind that `region` touches at all -- a line
     or polygon need only pass through it, not lie inside it, as marquee
     selection works in most vector editors."""
@@ -131,6 +215,34 @@ def elements_in(drawing: VectorDrawing, mode: SelectionMode, region: Region) -> 
         case "polygons":
             touched = _lines_in(drawing, drawing.lines, region)
             return {polygon for line in touched for polygon in drawing.polygons_on(line)}
+
+
+def selectable_in(selection: Selection, region: Region) -> set[Selectable]:
+    """Everything `selection` could select that `region` touches: items of
+    its layer, or elements of its drawing, as its mode says."""
+    mode = selection.mode
+    if mode == "objects":
+        return set() if selection.layer is None else set(items_in(selection.layer, region))
+    return set() if selection.drawing is None else set(elements_in(selection.drawing, mode, region))
+
+
+def items_in(layer: Layer, region: Region) -> set[Item]:
+    """Every one of a layer's items, if it's visible, that `region`
+    touches at all: an image anywhere over it, or a drawing with a line or
+    an end point in it."""
+    hits: set[Item] = set()
+    if not layer.visible:
+        return hits
+    for item in layer.items:
+        match item:
+            case RasterImage():
+                touched = region.touches_rect(*item_bounds(item))
+            case VectorDrawing():
+                ends = [point for point in item.points if not is_control(item, point)]
+                touched = bool(_lines_in(item, item.lines, region) or _points_in(item, ends, region))
+        if touched:
+            hits.add(item)
+    return hits
 
 
 def _points_in(drawing: VectorDrawing, points: Iterable[Point], region: Region) -> list[Point]:

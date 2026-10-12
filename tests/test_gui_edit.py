@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QRectF, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -17,6 +17,7 @@ from conftest import click, drag, key, move, press, release  # noqa: E402
 from vectorize_image.document import Line, Point, Polygon, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
+from vectorize_image.gui.overlays import CursorGuides  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (110.0, 40.0), (110.0, 110.0), (40.0, 110.0)]
@@ -65,12 +66,15 @@ def _line_between(drawing: VectorDrawing, a: tuple[float, float], b: tuple[float
 def test_edit_shows_selection_actions_and_control_points(window: MainWindow, diamond_path: str) -> None:
     _edit_square(window, diamond_path)
     assert window.points_mode_action.isVisible() and window.points_mode_action.isChecked()
-    assert window.move_select_action.isVisible() and window.move_select_action.isChecked()
+    assert window.tweak_action.isVisible() and window.tweak_action.isChecked()
     assert window.canvas.document_item.view.show_controls
 
-    window.trace_tool_action.setChecked(True)
-    assert not window.points_mode_action.isVisible()
+    window.trace_tool_action.setChecked(True)  # Pen, still in edit mode
+    assert window.tool is window.trace_tool and window.points_mode_action.isVisible()
     assert not window.canvas.document_item.view.show_controls
+
+    window.edit_tool_action.setChecked(False)
+    assert not window.points_mode_action.isVisible()
 
 
 def test_clicking_a_point_selects_it_and_enables_delete(window: MainWindow, diamond_path: str) -> None:
@@ -102,6 +106,7 @@ def test_dragging_a_point_previews_then_moves_it_as_one_undo_step(window: MainWi
     controls = drawing.controls_at(corner)
     item = window.canvas.document_item.item_for(drawing)
     assert item is not None
+    window.move_tool_action.trigger()
 
     move(window, *CORNERS[0])
     press(window, *CORNERS[0])
@@ -124,6 +129,7 @@ def test_moving_a_point_carries_its_control_points(window: MainWindow, diamond_p
     drawing, _ = _edit_square(window, diamond_path)
     corner = _point_at(drawing, CORNERS[0])
     before = {c: drawing.position(c).copy() for c in drawing.controls_at(corner)}
+    window.move_tool_action.trigger()
 
     drag(window, CORNERS[0], (30, 35))
 
@@ -134,6 +140,7 @@ def test_moving_a_point_carries_its_control_points(window: MainWindow, diamond_p
 def test_escape_cancels_a_drag(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
     corner = _point_at(drawing, CORNERS[0])
+    window.move_tool_action.trigger()
 
     move(window, *CORNERS[0])
     press(window, *CORNERS[0])
@@ -163,10 +170,57 @@ def test_undo_mid_drag_abandons_the_drag(window: MainWindow, diamond_path: str) 
     assert not window.edit_tool.move_tool.dragging
 
 
+def test_tweak_drags_what_it_presses_on(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    assert window.tweak_action.isChecked()
+
+    drag(window, CORNERS[0], (30, 35))  # an unselected point: selected, then moved
+
+    moved = _point_at(drawing, (30, 35))
+    assert window.document.selection.items == {moved}
+    assert window.document.history.undo_text() == "Move Points"
+
+    drag(window, (75, 75), (85, 80))  # nothing there: deselects, moves nothing
+    assert not window.document.selection
+    assert np.allclose(drawing.position(moved), (30, 35), atol=TOLERANCE)
+
+
+def test_tweak_drags_a_whole_selection_and_a_click_narrows_it(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    click(window, *CORNERS[1], shift=True)
+    first, second = _point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])
+
+    drag(window, CORNERS[1], (CORNERS[1][0] + 5, CORNERS[1][1] + 5))  # on part of the selection: all of it moves
+    assert np.allclose(drawing.position(first), (CORNERS[0][0] + 5, CORNERS[0][1] + 5), atol=TOLERANCE)
+    assert window.document.selection.items == {first, second}
+
+    click(window, CORNERS[0][0] + 5, CORNERS[0][1] + 5)  # a click on part of it: just that part
+    assert window.document.selection.items == {first}
+
+
+def test_move_drags_the_selection_from_anywhere(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    corner = _point_at(drawing, CORNERS[0])
+    _key(window, Qt.Key.Key_G)
+    assert window.tool is window.edit_tool and window.edit_tool.select_tool is window.edit_tool.move_tool
+
+    drag(window, (75, 75), (85, 80))  # not on the point: it moves all the same
+
+    assert np.allclose(drawing.position(corner), (CORNERS[0][0] + 10, CORNERS[0][1] + 5), atol=TOLERANCE)
+    assert window.document.selection.items == {corner}
+
+    drag(window, CORNERS[1], (CORNERS[1][0] + 5, CORNERS[1][1]))  # an unselected point: selected, then moved alone
+    assert window.document.selection.items == {_point_at(drawing, (CORNERS[1][0] + 5, CORNERS[1][1]))}
+    assert np.allclose(drawing.position(corner), (CORNERS[0][0] + 10, CORNERS[0][1] + 5), atol=TOLERANCE)
+
+
 def test_dragging_a_group_moves_all_of_it(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
     click(window, *CORNERS[0])
     click(window, *CORNERS[1], shift=True)
+    window.move_tool_action.trigger()
 
     drag(window, CORNERS[1], (CORNERS[1][0] + 5, CORNERS[1][1] + 5))
 
@@ -207,6 +261,7 @@ def test_dragging_a_polygon_moves_it_rigidly(window: MainWindow, diamond_path: s
     drawing, _ = _edit_square(window, diamond_path)
     _key(window, Qt.Key.Key_3)
     before = {point: drawing.position(point).copy() for point in drawing.points}
+    window.move_tool_action.trigger()
 
     drag(window, (75, 75), (80, 70))
 
@@ -251,6 +306,47 @@ def test_box_select_escape_cancels(window: MainWindow, diamond_path: str) -> Non
     assert not window.document.selection
 
 
+def _guides(window: MainWindow) -> list[CursorGuides]:
+    return [item for item in window.canvas.scene().items() if isinstance(item, CursorGuides)]
+
+
+def test_box_select_shows_guides_through_the_cursor(window: MainWindow, diamond_path: str) -> None:
+    _edit_square(window, diamond_path)
+    assert not _guides(window)
+
+    window.box_select_action.setChecked(True)
+    move(window, 50, 60)
+    (guides,) = _guides(window)
+    assert guides.isVisible()
+    assert (guides.pos().x(), guides.pos().y()) == pytest.approx((50, 60), abs=TOLERANCE)
+
+    # In screen space: wherever the cursor is, at any zoom, the lines span the view.
+    canvas = window.canvas
+    for zoom in (canvas.zoom_in, canvas.zoom_out, canvas.zoom_out, canvas.zoom_out):
+        zoom()
+        on_screen = guides.deviceTransform(canvas.viewportTransform()).mapRect(guides.boundingRect())
+        assert on_screen.contains(QRectF(canvas.viewport().rect()))
+
+    window.document.current_layer = window.document.layers[0]  # Image: nothing to select, guides all the same
+    move(window, 55, 65)
+    assert guides.isVisible()
+
+    window.tweak_action.setChecked(True)
+    assert not _guides(window)
+
+
+def test_box_select_guides_before_any_image(window: MainWindow) -> None:
+    window.edit_tool_action.setChecked(True)
+    window.box_select_action.setChecked(True)
+    scrollable = window.canvas.sceneRect()
+
+    move(window, 10, 10)
+
+    (guides,) = _guides(window)
+    assert guides.isVisible()
+    assert window.canvas.sceneRect() == scrollable  # the guides don't make the empty canvas scroll
+
+
 def test_paint_select_adds_what_the_brush_passes_over(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
     window.paint_select_action.setChecked(True)
@@ -264,7 +360,7 @@ def test_paint_select_adds_what_the_brush_passes_over(window: MainWindow, diamon
 
     assert {_point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])} <= window.document.selection.items
 
-    window.move_select_action.setChecked(True)
+    window.tweak_action.setChecked(True)
     assert not window.paint_radius_widget.isVisibleTo(window)
 
 
@@ -297,7 +393,7 @@ def test_leaving_edit_clears_the_selection_and_overlays(window: MainWindow, diam
     click(window, *CORNERS[0])
     before = len(window.canvas.scene().items())
 
-    window.trace_tool_action.setChecked(True)
+    window.edit_tool_action.setChecked(False)
     assert not window.document.selection
     window.edit_tool_action.setChecked(True)
     QApplication.processEvents()
@@ -306,9 +402,11 @@ def test_leaving_edit_clears_the_selection_and_overlays(window: MainWindow, diam
 
 def test_undo_names_what_the_edit_did(window: MainWindow, diamond_path: str) -> None:
     _edit_square(window, diamond_path)
+    window.move_tool_action.trigger()
     drag(window, CORNERS[0], (30, 35))
     assert window.undo_action.text() == "&Undo Move Points"
 
+    window.tweak_action.trigger()
     _key(window, Qt.Key.Key_3)
     click(window, 75, 75)
     window.delete_action.trigger()

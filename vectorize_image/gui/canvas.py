@@ -8,21 +8,23 @@ The scene holds two things, bottom to top:
     overlays    whatever the active tool adds (see add_overlay)
 
 Tools drive it through a small interface -- the current drawing's editing
-decorations and move preview, adding and removing their own overlay
-items, and converting on-screen distances to scene units -- rather than
-reaching into the scene themselves. `document_item` is an attribute
-for inspection (e.g. by tests), not for tools to modify.
+decorations and move preview, previews of whole items moving, adding and
+removing their own overlay items, and on-screen geometry (distances in
+scene units, the view's size) -- rather than reaching into the scene
+themselves. `document_item`
+is an attribute for inspection (e.g. by tests), not for tools to modify.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import Final
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QWidget
 
-from ..document import Document, Point, VectorDrawing
+from ..document import Document, Item, Point, VectorDrawing
 from ..typedefs import PointLike
 from .document_items import DocumentItem, VectorStyle
 from .widgets import ZoomableGraphicsView
@@ -40,6 +42,11 @@ class Canvas(ZoomableGraphicsView):
         # so they reach a little past their items' bounds; repainting the
         # whole viewport on a change keeps that from leaving trails.
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        # The scrollable area is the document's (see fit), never the
+        # overlays'. Until there's a document to fit, it's pinned to a
+        # single unit; left unset, it would grow to take in whatever a tool
+        # shows on an empty canvas.
+        self.setSceneRect(QRectF(0, 0, 1, 1))
         self.document: Document = document
         self.document_item: DocumentItem = DocumentItem(document)
         self.document_item.setZValue(DOCUMENT_Z)
@@ -72,6 +79,16 @@ class Canvas(ZoomableGraphicsView):
         if item is not None:
             item.clear_move_preview()
 
+    def preview_offset(self, items: Iterable[Item], delta: PointLike) -> None:
+        """Show whole `items` moved by `delta`, without moving them."""
+        for item in items:
+            view = self.document_item.view_of(item)
+            if view is not None:
+                view.preview_offset(delta)
+
+    def end_offset_preview(self, items: Iterable[Item]) -> None:
+        self.preview_offset(items, (0.0, 0.0))
+
     # ----------------------------------------------------------- overlays
 
     def add_overlay(self, item: QGraphicsItem) -> None:
@@ -88,6 +105,11 @@ class Canvas(ZoomableGraphicsView):
     def scene_distance(self, px: float) -> float:
         """An on-screen distance in pixels, in scene units at the current zoom."""
         return px / (self.transform().m11() or 1.0)
+
+    def view_size(self) -> tuple[float, float]:
+        """The view's on-screen (width, height) in pixels."""
+        size = self.viewport().size()
+        return (float(size.width()), float(size.height()))
 
     def fit(self) -> None:
         """Make the whole document fill the view, and the scrollable area."""

@@ -84,6 +84,17 @@ class ModelItem(QGraphicsItem):
     def detach(self) -> None:
         """Stop following the model, before being thrown away."""
 
+    def preview_offset(self, delta: PointLike) -> None:
+        """Show it moved by `delta` -- not moving it in the model -- or, by
+        (0, 0), where it is again."""
+        dx, dy = np.asarray(delta, dtype=float)
+        placement = self._placement()
+        self.setPos(placement.x() + float(dx), placement.y() + float(dy))
+
+    def _placement(self) -> QPointF:
+        """Where its part of the document puts it, in its parent."""
+        return QPointF(0.0, 0.0)
+
     def set_view(self, view: VectorView) -> None:
         """Show vector drawings (this one, or any inside it) this way."""
         del view  # nothing to show differently by default
@@ -173,6 +184,17 @@ class DocumentItem(_ContainerItem[Layer]):
         """What all the document's items cover."""
         return self.childrenBoundingRect()
 
+    def view_of(self, item: Item) -> ModelItem | None:
+        """The canvas item showing `item`, if it's in the document."""
+        return next(
+            (
+                child
+                for child in self.descendants()
+                if isinstance(child, RasterImageItem | VectorDrawingItem) and child.model is item
+            ),
+            None,
+        )
+
     def item_for(self, drawing: VectorDrawing) -> VectorDrawingItem | None:
         """The item showing `drawing`, if it's in the document."""
         return next(
@@ -212,9 +234,9 @@ def _make_item_view(item: Item) -> ModelItem:
 
 
 class RasterImageItem(ModelItem):
-    """The image's pixels, one per scene unit, from the origin. Shown as
-    sharp squares when zoomed in, not smoothed, so it's clear exactly
-    which pixels a trace follows."""
+    """The image's pixels, one per scene unit, from where it's placed.
+    Shown as sharp squares when zoomed in, not smoothed, so it's clear
+    exactly which pixels a trace follows."""
 
     def __init__(self, image: RasterImage, parent: QGraphicsItem | None = None) -> None:
         super().__init__(parent)
@@ -223,6 +245,24 @@ class RasterImageItem(ModelItem):
         width, height = image.size
         qimage = QImage(image.pixels.tobytes(), width, height, 4 * width, QImage.Format.Format_RGBA8888)
         self.pixmap: QPixmap = QPixmap.fromImage(qimage.copy())  # copy: the bytes object doesn't outlive this
+        self._on_moved()
+        image.moved.connect(self._on_moved)
+
+    @property
+    def model(self) -> RasterImage:
+        return self.image
+
+    @override
+    def detach(self) -> None:
+        disconnect(self.image.moved, self._on_moved)
+
+    def _on_moved(self) -> None:
+        self.setPos(self._placement())
+
+    @override
+    def _placement(self) -> QPointF:
+        x, y = self.image.position
+        return QPointF(float(x), float(y))
 
     @override
     def boundingRect(self) -> QRectF:
@@ -285,6 +325,10 @@ class VectorDrawingItem(ModelItem):
     @property
     def view(self) -> VectorView:
         return self._view
+
+    @property
+    def model(self) -> VectorDrawing:
+        return self.drawing
 
     def _on_selection_changed(self) -> None:
         self.update()
@@ -409,9 +453,9 @@ class VectorDrawingItem(ModelItem):
 
     def _paint_selection(self, painter: QPainter, scale: float) -> None:
         selection = self._view.selection
-        if not selection:
+        if not selection or selection.mode == "objects":  # whole items: shown by object mode's own boxes
             return
-        items = selection.items
+        items = selection.elements
         painter.setBrush(Qt.BrushStyle.NoBrush)
         marked: list[Point] = []
         match selection.mode:

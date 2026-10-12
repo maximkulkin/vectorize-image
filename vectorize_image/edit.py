@@ -9,7 +9,7 @@ from typing import assert_never
 
 from .document import Element, Line, Point, Polygon, VectorDrawing
 from .document.hit_test import is_control
-from .typedefs import SelectionMode
+from .typedefs import ElementMode
 
 
 def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozenset[Point]:
@@ -32,7 +32,7 @@ def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozense
     return frozenset(points)
 
 
-def elements_to_delete(drawing: VectorDrawing, mode: SelectionMode, items: Iterable[Element]) -> frozenset[Element]:
+def elements_to_delete(drawing: VectorDrawing, mode: ElementMode, items: Iterable[Element]) -> frozenset[Element]:
     """What deleting the selection removes, beyond what removing it
     cascades to anyway (see VectorDrawing.remove):
 

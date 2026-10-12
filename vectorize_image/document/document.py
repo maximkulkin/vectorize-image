@@ -8,62 +8,18 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import ClassVar, Final, override
 
+import numpy as np
+
 from ..signals import Signal, disconnect
+from ..typedefs import PointLike
 from .history import Command, History
+from .layer import Item, Layer
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .selection import Selection
 from .vector import VectorDrawing
 
-type Item = RasterImage | VectorDrawing
-
-
-class Layer:
-    changed: ClassVar[Signal] = Signal()  # name, visibility or opacity changed
-
-    def __init__(self, name: str = "", items: Iterable[Item] = (), *, visible: bool = True, opacity: float = 1.0) -> None:
-        self.items: Final[ObservableList[Item]] = ObservableList(items)
-        self._name: str = name
-        self._visible: bool = visible
-        self._opacity: float = _unit(opacity)
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @name.setter
-    def name(self, name: str) -> None:
-        if name != self._name:
-            self._name = name
-            self.changed.emit()
-
-    @property
-    def visible(self) -> bool:
-        return self._visible
-
-    @visible.setter
-    def visible(self, visible: bool) -> None:
-        if visible != self._visible:
-            self._visible = visible
-            self.changed.emit()
-
-    @property
-    def opacity(self) -> float:
-        """How opaque the whole layer is drawn, from 0 (not at all) to 1;
-        set outside that range, it's clamped."""
-        return self._opacity
-
-    @opacity.setter
-    def opacity(self, opacity: float) -> None:
-        opacity = _unit(opacity)
-        if opacity != self._opacity:
-            self._opacity = opacity
-            self.changed.emit()
-
-
-def _unit(value: float) -> float:
-    return min(max(float(value), 0.0), 1.0)
-
+__all__ = ["Document", "InsertLayer", "Item", "Layer", "MoveItems", "MoveLayer", "RemoveLayer", "RenameLayer"]
 
 class Document:
     """What's being worked on, and the source of truth for it: everything
@@ -75,8 +31,9 @@ class Document:
 
     Alongside the content, it keeps the state of working on it: the
     current layer (where drawing tools work), the undo `history` every
-    change to a drawing goes through, and the Edit tool's `selection`,
-    which follows the current layer's drawing.
+    change to a drawing goes through, and the `selection`, which selects
+    whole items of the current layer, or the elements of that layer's
+    drawing.
     """
 
     current_layer_changed: ClassVar[Signal] = Signal()
@@ -120,6 +77,10 @@ class Document:
         """Every item of one kind, across all layers, bottom to top."""
         return [item for layer in self.layers for item in layer.items if isinstance(item, kind)]
 
+    def layer_of(self, item: Item) -> Layer | None:
+        """The layer `item` is in, if it's in the document."""
+        return next((layer for layer in self.layers if item in layer.items), None)
+
     # --------------------------------------------------------- current layer
 
     @property
@@ -145,6 +106,7 @@ class Document:
             layer.items.inserted.connect(self._on_current_items_changed)
             layer.items.removed.connect(self._on_current_items_changed)
         self.selection.set_drawing(self.current_drawing)
+        self.selection.set_layer(layer)
         self.current_layer_changed.emit()
 
     @property
@@ -271,3 +233,29 @@ class RemoveLayer(Command):
         self.document.layers.insert(self._index, self.layer)
         if self._was_current:
             self.document.current_layer = self.layer
+
+
+class MoveItems(Command):
+    """Move whole items by a distance -- a drawing by moving all its
+    points, an image by moving where it's placed; undo moves them back."""
+
+    def __init__(self, items: Iterable[Item], delta: PointLike, text: str = "Move") -> None:
+        super().__init__(text)
+        self.items: Final[tuple[Item, ...]] = tuple(items)
+        self.delta: Final[np.ndarray] = np.array(delta, dtype=float)
+
+    @override
+    def redo(self) -> None:
+        self._move(self.delta)
+
+    @override
+    def undo(self) -> None:
+        self._move(-self.delta)
+
+    def _move(self, delta: np.ndarray) -> None:
+        for item in self.items:
+            match item:
+                case VectorDrawing():
+                    item.translate(item.points, delta)
+                case RasterImage():
+                    item.move_to(item.position + delta)

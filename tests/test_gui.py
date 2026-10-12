@@ -61,12 +61,15 @@ def _square_path(tmp_path: Path) -> str:
 # ------------------------------------------------------------- document
 
 
-def test_starts_with_the_pen_and_nothing_open(window: MainWindow) -> None:
-    assert window.tool is window.trace_tool and window.trace_tool_action.isChecked()
+def test_starts_in_object_mode_with_nothing_open(window: MainWindow) -> None:
+    assert window.tool is window.object_tool
+    assert not window.trace_tool_action.isChecked() and not window.edit_tool_action.isChecked()
     assert not window.document.layers
     assert window.statusBar().currentMessage() == "Open an image to get started."
     tool_actions = window._tool_action_group.actions()
-    assert tool_actions == [window.trace_tool_action, window.edit_tool_action]
+    selects = [window.tweak_action, window.box_select_action, window.paint_select_action]
+    assert tool_actions == [*selects, window.move_tool_action, window.trace_tool_action]
+    assert window.tweak_action.isChecked()
 
 
 def test_loading_an_image_builds_image_and_drawing_layers(window: MainWindow, donut_path: str) -> None:

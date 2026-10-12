@@ -309,6 +309,16 @@ def test_fit_with_an_empty_document_does_nothing(canvas: Canvas) -> None:
     assert canvas.transform() == before
 
 
+def test_overlays_dont_grow_the_scrollable_area(canvas: Canvas) -> None:
+    before = canvas.sceneRect()
+    canvas.add_overlay(QGraphicsRectItem(-500, -500, 1000, 1000))
+    assert canvas.sceneRect() == before
+
+    canvas.document.layers.append(Layer("a", [_solid(100, 60, (0, 0, 0, 255))]))
+    canvas.fit()
+    assert canvas.sceneRect() == QRectF(0, 0, 100, 60)
+
+
 def test_scene_distance_tracks_the_zoom(canvas: Canvas) -> None:
     canvas.document.layers.append(Layer("a", [_solid(100, 100, (0, 0, 0, 255))]))
     canvas.fit()
