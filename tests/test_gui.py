@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 import shiboken6  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QImage, QKeyEvent, QPainter, QWheelEvent  # noqa: E402
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGraphicsView  # noqa: E402
 
 from conftest import wait_until  # noqa: E402
@@ -278,6 +278,83 @@ def test_arrow_keys_pan_the_view(window: MainWindow, donut_path: str) -> None:
 
     view.keyPressEvent(_key_event(Qt.Key.Key_Up))
     assert (h.value(), v.value()) == start
+
+
+def _mouse_event(kind: QEvent.Type, pos: QPoint, button: Qt.MouseButton, buttons: Qt.MouseButton) -> QMouseEvent:
+    return QMouseEvent(kind, QPointF(pos), QPointF(pos), button, buttons, Qt.KeyboardModifier.NoModifier)
+
+
+def _middle_press(view: QGraphicsView, pos: QPoint) -> None:
+    middle = Qt.MouseButton.MiddleButton
+    view.mousePressEvent(_mouse_event(QEvent.Type.MouseButtonPress, pos, middle, middle))
+
+
+def _middle_move(view: QGraphicsView, pos: QPoint) -> None:
+    middle = Qt.MouseButton.MiddleButton
+    view.mouseMoveEvent(_mouse_event(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, middle))
+
+
+def _middle_release(view: QGraphicsView, pos: QPoint) -> None:
+    view.mouseReleaseEvent(
+        _mouse_event(QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.MiddleButton, Qt.MouseButton.NoButton)
+    )
+
+
+def test_middle_drag_pans_the_view(window: MainWindow, donut_path: str) -> None:
+    """The content follows the cursor: the scene point grabbed at press-time
+    stays under the cursor throughout the drag."""
+    window.load_image(donut_path)
+    view = window.canvas
+
+    for _ in range(6):  # need real scrollable range for panning to move anything
+        view.zoom_in()
+        QApplication.processEvents()
+
+    h, v = view.horizontalScrollBar(), view.verticalScrollBar()
+    start = (h.value(), v.value())
+    grab = QPoint(300, 250)
+
+    _middle_press(view, grab)
+    _middle_move(view, QPoint(340, 230))
+    assert (h.value(), v.value()) == (start[0] - 40, start[1] + 20)
+    _middle_move(view, QPoint(280, 270))
+    assert (h.value(), v.value()) == (start[0] + 20, start[1] - 20)
+    _middle_release(view, QPoint(280, 270))
+
+    # Moving after the release no longer pans.
+    view.mouseMoveEvent(
+        _mouse_event(QEvent.Type.MouseMove, QPoint(400, 400), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
+    )
+    assert (h.value(), v.value()) == (start[0] + 20, start[1] - 20)
+
+
+def test_middle_drag_blocks_zoom_until_released(window: MainWindow, donut_path: str) -> None:
+    window.load_image(donut_path)
+    view = window.canvas
+    scale = view.transform().m11()
+    pos = QPoint(300, 250)
+
+    _middle_press(view, pos)
+    view.wheelEvent(_wheel_event(pos, 120))
+    view.zoom_in()
+    view.zoom_out()
+    assert view.transform().m11() == scale
+    _middle_release(view, pos)
+
+    view.wheelEvent(_wheel_event(pos, 120))
+    assert view.transform().m11() == pytest.approx(scale * view.ZOOM_IN_FACTOR)
+
+
+def test_middle_drag_shows_a_closed_hand_and_restores_the_cursor(window: MainWindow, donut_path: str) -> None:
+    window.load_image(donut_path)
+    viewport = window.canvas.viewport()
+    before = viewport.cursor().shape()
+    pos = QPoint(300, 250)
+
+    _middle_press(window.canvas, pos)
+    assert viewport.cursor().shape() == Qt.CursorShape.ClosedHandCursor
+    _middle_release(window.canvas, pos)
+    assert viewport.cursor().shape() == before
 
 
 def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_path: str) -> None:

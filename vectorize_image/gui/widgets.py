@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import ClassVar, Final, Protocol, override
 
 from PySide6.QtCore import QPoint, QPointF, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QWheelEvent
+from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent, QPainter, QWheelEvent
 from PySide6.QtWidgets import QDoubleSpinBox, QGraphicsScene, QGraphicsView, QHBoxLayout, QSlider, QWidget
 
 
@@ -97,10 +97,12 @@ class SliderSpinRow(QWidget):
 
 
 class ZoomableGraphicsView(QGraphicsView):
-    """A QGraphicsView with mouse-wheel zoom, hand-drag panning, and
-    keyboard controls: arrow keys pan, +/- zoom in/out around the view's
+    """A QGraphicsView with mouse-wheel zoom, hand-drag panning (left
+    button, unless an interaction handler has it, or middle button always),
+    and keyboard controls: arrow keys pan, +/- zoom in/out around the view's
     center (mouse-wheel zoom instead anchors on the point under the cursor,
-    so that point stays put on screen).
+    so that point stays put on screen). Zooming is disabled while a
+    middle-button pan is in progress.
     """
 
     ZOOM_IN_FACTOR: Final = 1.25
@@ -112,6 +114,10 @@ class ZoomableGraphicsView(QGraphicsView):
     def __init__(self, scene: QGraphicsScene, parent: QWidget | None = None) -> None:
         super().__init__(scene, parent)
         self._interaction_handler: InteractionHandler | None = None
+        # Last cursor position of a middle-button pan in progress (None when
+        # not panning), and the viewport cursor to restore once it ends.
+        self._middle_pan_pos: QPoint | None = None
+        self._cursor_before_middle_pan: QCursor | None = None
         # Without this, Qt only sends mouseMoveEvent while a button is held
         # down (i.e. during a drag) -- but manual tracing's live preview
         # needs to see plain cursor movement between clicks, with no button
@@ -147,6 +153,8 @@ class ZoomableGraphicsView(QGraphicsView):
         return 0.0
 
     def _zoom_at_viewport_pos(self, viewport_pos: QPoint, factor: float) -> None:
+        if self._middle_pan_pos is not None:
+            return
         old_scene_pos = self.mapToScene(viewport_pos)
         if self._apply_zoom(factor):
             # Scaling alone leaves `viewport_pos` pointing at a different
@@ -205,12 +213,24 @@ class ZoomableGraphicsView(QGraphicsView):
 
     @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._middle_pan_pos is not None:
+            pos = event.position().toPoint()
+            delta = pos - self._middle_pan_pos
+            self._middle_pan_pos = pos
+            # Dragging right moves the content right, i.e. scrolls left.
+            self._pan(-delta.x(), -delta.y())
+            return
         if self._interaction_handler is not None:
             self._interaction_handler.on_move(self.mapToScene(event.position().toPoint()))
         super().mouseMoveEvent(event)
 
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._middle_pan_pos = event.position().toPoint()
+            self._cursor_before_middle_pan = self.viewport().cursor()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
         if self._interaction_handler is not None and event.button() == Qt.MouseButton.LeftButton:
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             self._interaction_handler.on_press(self.mapToScene(event.position().toPoint()), shift)
@@ -219,6 +239,12 @@ class ZoomableGraphicsView(QGraphicsView):
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton:
+            if self._cursor_before_middle_pan is not None:
+                self.viewport().setCursor(self._cursor_before_middle_pan)
+            self._middle_pan_pos = None
+            self._cursor_before_middle_pan = None
+            return
         if self._interaction_handler is not None and event.button() == Qt.MouseButton.LeftButton:
             self._interaction_handler.on_release(self.mapToScene(event.position().toPoint()))
             return
