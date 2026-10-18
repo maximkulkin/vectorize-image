@@ -16,7 +16,9 @@ object mode.
 The document is the source of truth: the canvas and the Layers panel show
 it, every change to it goes through its undo history, and Save exports
 what's in it. Cut, Copy and Paste work on the selection, in either mode,
-through a clipboard of the app's own (see clipboard.py).
+through a clipboard of the app's own (see clipboard.py). In edit mode,
+Select Connected (Ctrl+L) grows a selection of points or lines to
+everything joined to it through lines.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ from PySide6.QtWidgets import (
 from .. import binarize, simplify, svgread, svgwrite, tracing
 from ..clipboard import Clipboard
 from ..document import Document, Layer, RasterImage, Remove, VectorDrawing
+from ..edit import elements_connected
 from ..signals import disconnect
 from ..typedefs import ElementMode, Shape
 from .canvas import Canvas
@@ -109,6 +112,7 @@ class MainWindow(QMainWindow):
     copy_action: QAction
     paste_action: QAction
     delete_action: QAction
+    select_connected_action: QAction
     trace_tool_action: QAction
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
@@ -237,6 +241,14 @@ class MainWindow(QMainWindow):
         self.delete_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Delete), QKeySequence(Qt.Key.Key_Backspace)])
         self.delete_action.setEnabled(False)
         self.delete_action.triggered.connect(self._delete_selection)
+
+        self.select_connected_action = QAction("Select C&onnected", self)
+        self.select_connected_action.setShortcut("Ctrl+L")
+        self.select_connected_action.setToolTip(
+            "Select Connected (Ctrl+L): in edit mode, add every point or line joined to the selected ones through lines"
+        )
+        self.select_connected_action.setEnabled(False)
+        self.select_connected_action.triggered.connect(self._select_connected)
 
         # The mode -- object, or with Edit Mode on, edit -- is the
         # selection's: "objects", to select whole items, or "points",
@@ -375,6 +387,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.copy_action)
         edit_menu.addAction(self.paste_action)
         edit_menu.addAction(self.delete_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.select_connected_action)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(zoom_in_action)
@@ -786,6 +800,9 @@ class MainWindow(QMainWindow):
         self.cut_action.setEnabled(can_copy)
         self.copy_action.setEnabled(can_copy)
         self.paste_action.setEnabled(selecting and self.clipboard.can_paste(selection))
+        self.select_connected_action.setEnabled(
+            self.tool is self.edit_tool and selection.mode in ("points", "lines") and bool(selection)
+        )
 
     def _selecting(self) -> bool:
         return self.tool is self.object_tool or self.tool is self.edit_tool
@@ -804,6 +821,12 @@ class MainWindow(QMainWindow):
     def _paste(self) -> None:
         if self._selecting():
             self.clipboard.paste(self.document)
+
+    def _select_connected(self) -> None:
+        selection = self.document.selection
+        if self.tool is not self.edit_tool or selection.drawing is None or selection.mode == "objects":
+            return
+        selection.set_items(elements_connected(selection.drawing, selection.mode, selection.elements))
 
     def _update_save_enabled(self) -> None:
         self.save_action.setEnabled(

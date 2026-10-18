@@ -1,7 +1,7 @@
 import numpy as np
 
 from vectorize_image.document import BezierCurve, Line, Point, VectorDrawing
-from vectorize_image.edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move
+from vectorize_image.edit import controls_shown, elements_connected, elements_to_delete, mirrored_partner, points_to_move
 
 
 def _curve(drawing: VectorDrawing, start: Point, end: Point) -> Line:
@@ -118,3 +118,27 @@ def test_deleting_lines_takes_only_lines() -> None:
     a, b = drawing.add_point((0, 0)), drawing.add_point((10, 0))
     line = drawing.add_line(a, b)
     assert elements_to_delete(drawing, "lines", [line, a]) == {line}
+
+
+def test_connected_points_and_lines() -> None:
+    drawing = VectorDrawing()
+    a, b, c, d = (drawing.add_point(p) for p in [(0, 0), (10, 0), (20, 0), (50, 0)])
+    ab, bc = _curve(drawing, a, b), drawing.add_line(b, c)
+    e = drawing.add_point((60, 0))
+    de = drawing.add_line(d, e)
+    control = drawing.controls_at(a)[0]
+
+    assert elements_connected(drawing, "points", [a, control]) == {a, b, c}
+    assert elements_connected(drawing, "points", [c, d]) == {a, b, c, d, e}
+    assert elements_connected(drawing, "lines", [bc, a]) == {ab, bc}
+    assert elements_connected(drawing, "lines", [ab, de]) == {ab, bc, de}
+
+
+def test_nothing_connects_to_polygons() -> None:
+    drawing = VectorDrawing()
+    a, b, c, d = (drawing.add_point(p) for p in [(0, 0), (10, 0), (10, 10), (0, 10)])
+    ab, bc, cd, da, ac = (drawing.add_line(*pair) for pair in [(a, b), (b, c), (c, d), (d, a), (a, c)])
+    drawing.add_polygon([[ac, cd, da]])
+    right = drawing.add_polygon([[ab, bc, ac]])
+
+    assert elements_connected(drawing, "polygons", [right, a]) == {right}

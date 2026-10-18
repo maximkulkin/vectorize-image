@@ -52,13 +52,13 @@ def _point_at(drawing: VectorDrawing, pos: tuple[float, float]) -> Point:
     return next(point for point in drawing.points if np.allclose(drawing.position(point), pos, atol=TOLERANCE))
 
 
-def _key(window: MainWindow, which: Qt.Key) -> None:
+def _key(window: MainWindow, which: Qt.Key, modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier) -> None:
     """A key press for a window-wide shortcut (unlike Escape, which goes
     to the canvas). Shortcuts only fire in the active window, which an
     offscreen one isn't until asked."""
     window.activateWindow()
     QTest.qWaitForWindowActive(window)
-    QTest.keyClick(window, which)
+    QTest.keyClick(window, which, modifiers)
     QApplication.processEvents()
 
 
@@ -482,6 +482,28 @@ def test_dragging_a_polygon_moves_it_rigidly(window: MainWindow, diamond_path: s
 
     for point, position in before.items():
         assert np.allclose(drawing.position(point), position + (5, -5), atol=TOLERANCE)
+
+
+def test_ctrl_l_selects_connected_points_and_lines(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    ends = {_point_at(drawing, corner) for corner in CORNERS}
+    apart = (drawing.add_point((150, 150)), drawing.add_point((170, 150)))
+    drawing.add_line(*apart)
+    assert not window.select_connected_action.isEnabled()
+
+    click(window, *CORNERS[0])
+    assert window.select_connected_action.isEnabled()
+    _key(window, Qt.Key.Key_L, Qt.KeyboardModifier.ControlModifier)
+    assert window.document.selection.items == ends  # not the control points, nor the line apart
+
+    _key(window, Qt.Key.Key_2)
+    click(window, 75, 40)
+    _key(window, Qt.Key.Key_L, Qt.KeyboardModifier.ControlModifier)
+    assert window.document.selection.items == {line for line in drawing.lines if line.start in ends}
+
+    _key(window, Qt.Key.Key_3)
+    click(window, 75, 75)
+    assert not window.select_connected_action.isEnabled()
 
 
 def test_switching_selection_mode_clears_the_selection(window: MainWindow, diamond_path: str) -> None:

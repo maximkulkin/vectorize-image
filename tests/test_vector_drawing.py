@@ -387,6 +387,25 @@ def test_shared_border_between_polygons() -> None:
     assert events == [("reshaped", frozenset({ac.control1, ac, left, right}))]
 
 
+def test_connected_walks_lines_end_to_end_but_not_through_controls() -> None:
+    drawing = VectorDrawing()
+    square, sides = _square(drawing, curves=True)
+    tail = drawing.add_point((20, 0))
+    spur = drawing.add_line(square[1], tail)
+    elsewhere, _ = _square(drawing, x=50)
+    lone = drawing.add_point((100, 100))
+
+    points, lines = drawing.connected([square[0]])
+    assert set(points) == {*square, tail}
+    assert set(lines) == {*sides, spur}
+
+    assert drawing.connected([lone]) == ([lone], [])
+    control = drawing.controls_at(square[0])[0]
+    assert drawing.connected([control]) == ([control], [])
+    points, _ = drawing.connected([tail, elsewhere[2]])
+    assert set(points) == {*square, tail, *elsewhere}
+
+
 def test_polygon_rings_are_fixed() -> None:
     drawing = VectorDrawing()
     _, lines = _square(drawing)

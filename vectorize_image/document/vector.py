@@ -291,6 +291,24 @@ class VectorDrawing:
         """The polygons that `line` is part of the boundary of."""
         return self._polygons_on[line].keys()
 
+    def connected(self, points: Iterable[Point]) -> tuple[list[Point], list[Line]]:
+        """Everything reachable from `points` by going along lines, end to
+        end: the points (`points` themselves included) and the lines
+        between them. Control points don't connect anything -- a control
+        point among `points` reaches only itself."""
+        reached: dict[Point, None] = dict.fromkeys(points)
+        lines: dict[Line, None] = {}
+        pending = list(reached)
+        while pending:
+            point = pending.pop()
+            for line in self.lines_at(point):
+                lines[line] = None
+                other = line.other(point)
+                if other not in reached:
+                    reached[other] = None
+                    pending.append(other)
+        return list(reached), list(lines)
+
     def fragment(self, elements: Iterable[Element]) -> Fragment:
         """The elements with everything they're made from -- each line's
         points, each polygon's lines and theirs -- and where those points

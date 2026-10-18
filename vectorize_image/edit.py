@@ -164,6 +164,30 @@ def elements_to_copy(drawing: VectorDrawing, mode: ElementMode, items: Iterable[
             assert_never(mode)
 
 
+def elements_connected(drawing: VectorDrawing, mode: ElementMode, items: Iterable[Element]) -> frozenset[Element]:
+    """What Select Connected selects -- the selected elements, and
+    everything of their kind joined to them through lines, end to end
+    (see VectorDrawing.connected):
+
+    - points: every end point reachable from the selected ones.
+    - lines: every line reachable from the selected ones' ends.
+    - polygons: just the selected polygons; nothing connects to them.
+    """
+    items = frozenset(items)
+    match mode:
+        case "points":
+            points, _ = drawing.connected(item for item in items if isinstance(item, Point) and not is_control(drawing, item))
+            return frozenset(points)
+        case "lines":
+            lines = [item for item in items if isinstance(item, Line)]
+            _, reached = drawing.connected(point for line in lines for point in (line.start, line.end))
+            return frozenset([*lines, *reached])
+        case "polygons":
+            return frozenset(item for item in items if isinstance(item, Polygon))
+        case _:
+            assert_never(mode)
+
+
 def _polygons_within(drawing: VectorDrawing, lines: set[Line]) -> set[Polygon]:
     """The polygons bounded by `lines` alone."""
     return {
