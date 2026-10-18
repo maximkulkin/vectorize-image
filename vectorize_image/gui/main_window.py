@@ -16,7 +16,9 @@ and switching to Move that way, it comes up without the handles. Rotate
 is the same, turning instead of moving -- vector drawings only, never
 images -- around the middle of the selection: its button brings up a
 ring to drag around that, and R turns the selection with the cursor
-until a click, without it. Edit Mode
+until a click, without it. Scale, likewise, stretches the selection away
+from its middle, or squeezes it toward it: by a square on the middle,
+every way at once, or by an arrow along X or Y -- or S. Edit Mode
 toggles on and off -- Tab, as in Blender too, goes into it and back out to
 object mode.
 
@@ -38,6 +40,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
+
+type _TransformTool = Literal["move", "rotate", "scale"]  # the select tools with handles, and a grab of their own
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
@@ -106,6 +110,8 @@ class MainWindow(QMainWindow):
     grab_action: QAction
     rotate_tool_action: QAction
     rotate_action: QAction
+    scale_tool_action: QAction
+    scale_action: QAction
     _select_tool_actions: tuple[QAction, ...]
     select_tool_button: QToolButton
     _selection_toolbar_separator: QAction
@@ -337,22 +343,41 @@ class MainWindow(QMainWindow):
         self.rotate_action.setShortcut(QKeySequence(Qt.Key.Key_R))
         self.rotate_action.triggered.connect(lambda: self._grab(self.rotate_tool_action, "rotate"))
         self.addAction(self.rotate_action)
+        self.scale_tool_action = QAction(themed_icon("scale"), "&Scale", self)
+        self.scale_tool_action.setCheckable(True)
+        self.scale_tool_action.setToolTip(
+            (
+                "Scale (S): drag the square on the selection's middle up and right to grow its drawings, "
+                "down and left to shrink them, "
+                "or an arrow to scale them along X or Y; click to select, shift-click for more, or drag "
+                "something to scale it. S scales the selection with the cursor instead, without the "
+                "handles -- click to place it, X or Y to keep to one axis, Shift to snap, Esc to cancel"
+            )
+        )
+        # S, as G is for Move: Scale and a grab, scaling the selection, at once.
+        self.scale_action = QAction("Scale S&election", self)
+        self.scale_action.setShortcut(QKeySequence(Qt.Key.Key_S))
+        self.scale_action.triggered.connect(lambda: self._grab(self.scale_tool_action, "scale"))
+        self.addAction(self.scale_action)
         self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
         self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge, in the current layer")
 
         self._tool_action_group = QActionGroup(self)
         self._tool_action_group.setExclusive(True)
-        for action in (*self._select_tool_actions, self.move_tool_action, self.rotate_tool_action, self.trace_tool_action):
+        transform_actions = (self.move_tool_action, self.rotate_tool_action, self.scale_tool_action)
+        for action in (*self._select_tool_actions, *transform_actions, self.trace_tool_action):
             self._tool_action_group.addAction(action)
         _when_checked(self.tweak_action, lambda: self._set_select_tool("tweak", self.tweak_action))
         _when_checked(self.box_select_action, lambda: self._set_select_tool("box", self.box_select_action))
         _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint", self.paint_select_action))
         _when_checked(self.move_tool_action, lambda: self._set_select_tool("move"))
         _when_checked(self.rotate_tool_action, lambda: self._set_select_tool("rotate"))
-        # Only the buttons trigger them: G and R check them, without handles.
+        _when_checked(self.scale_tool_action, lambda: self._set_select_tool("scale"))
+        # Only the buttons trigger them: G, R and S check them, without handles.
         self.move_tool_action.triggered.connect(lambda: self._set_handles("move", True))
         self.rotate_tool_action.triggered.connect(lambda: self._set_handles("rotate", True))
+        self.scale_tool_action.triggered.connect(lambda: self._set_handles("scale", True))
         self.trace_tool_action.toggled.connect(self._update_tool)
 
         # The select tools share one toolbar button, showing the one in use,
@@ -435,6 +460,7 @@ class MainWindow(QMainWindow):
         tools_toolbar.addWidget(self.select_tool_button)
         tools_toolbar.addAction(self.move_tool_action)
         tools_toolbar.addAction(self.rotate_tool_action)
+        tools_toolbar.addAction(self.scale_tool_action)
         tools_toolbar.addAction(self.trace_tool_action)
         tools_toolbar.addSeparator()
         tools_toolbar.addAction(self.edit_tool_action)
@@ -632,14 +658,13 @@ class MainWindow(QMainWindow):
         self.edit_tool.set_select_tool(name)
         self._update_tool()
 
-    def _set_handles(self, name: Literal["move", "rotate"], shown: bool) -> None:
-        """Show Move's or Rotate's handles, or don't, in both modes (see MoveTool.set_handles)."""
-        for mode_tool in (self.object_tool, self.edit_tool):
-            tool = mode_tool.move_tool if name == "move" else mode_tool.rotate_tool
-            tool.set_handles(shown)
+    def _set_handles(self, name: _TransformTool, shown: bool) -> None:
+        """Show `name`'s handles, or don't, in both modes (see MoveTool.set_handles)."""
+        self.object_tool.transform_tools[name].set_handles(shown)
+        self.edit_tool.transform_tools[name].set_handles(shown)
 
-    def _grab(self, action: QAction, name: Literal["move", "rotate"]) -> None:
-        """Switch to Move or Rotate, by its `action` -- without its
+    def _grab(self, action: QAction, name: _TransformTool) -> None:
+        """Switch to Move, Rotate or Scale, by its `action` -- without its
         handles, unless it's on already -- and grab the selection with it
         from where the cursor is (see MoveTool.start_grab)."""
         if not action.isChecked():

@@ -1,7 +1,8 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
 curve and snap ring, the Edit tool's hover/drag highlights and the point Add Point would add, the box,
 guides and brush of the area select tools, object mode's hover highlight
-and boxes around images, a grab's axis guide, and the Move and Rotate tools' handles. Built from stock Qt graphics items so their
+and boxes around images, a grab's axis guide, and the Move, Rotate and
+Scale tools' handles. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
 cosmetic pens, or ignores the view transform entirely, so it keeps a fixed
 on-screen size at any zoom.
@@ -10,11 +11,11 @@ on-screen size at any zoom.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import override
+from typing import ClassVar, override
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from ..document import Element, Line, Point, Polygon, VectorDrawing
 from ..typedefs import Axis, Bezier, PointLike, TransformHandle
+from .cursors import rotate_cursor
 from .document_items import LINE_WIDTH_PX, POINT_RADIUS_PX, bezier_path
 
 PREVIEW_COLOR = QColor(255, 214, 0)
@@ -40,17 +42,20 @@ SNAP_HIGHLIGHT_RADIUS_PX = 9.0
 HANDLE_HIGHLIGHT_RADIUS_PX = 7.0
 AXIS_GUIDE_REACH_PX = 1e6  # each way: across the view, wherever it's panned
 
-# The Move tool's handles, on screen: a disc in the middle, and an arrow
-# out from it along each axis -- right for X, up for Y.
-MOVE_CENTER_RADIUS_PX = 7.0
-MOVE_ARROW_START_PX = 14.0  # from the middle, where an arrow's shaft starts
-MOVE_ARROW_TIP_PX = 64.0  # ... and where its head's tip is
-MOVE_ARROW_HEAD_PX = 14.0  # how long the head is
-MOVE_ARROW_HEAD_HALF_WIDTH_PX = 6.0
-MOVE_ARROW_WIDTH_PX = 2.5
-MOVE_HANDLE_REACH_PX = 4.0  # how far past a handle a press still takes it
-MOVE_CENTER_COLOR = QColor(255, 255, 255)
+# The Move and Scale tools' handles, on screen: an arrow out from the
+# middle along each axis -- right for X, up for Y -- Move's with a pointed
+# head, Scale's with a square one; and in the middle, Move's disc, or
+# Scale's square.
+ARROW_TIP_PX = 64.0  # from the middle, where an arrow's head ends
+ARROW_HEAD_PX = 14.0  # how long a pointed head is
+ARROW_HEAD_HALF_WIDTH_PX = 6.0  # how wide either head is, each side of the shaft
+ARROW_WIDTH_PX = 2.5
+HANDLE_REACH_PX = 4.0  # how far past a handle a press still takes it
+HANDLE_CENTER_COLOR = QColor(255, 255, 255)
 HANDLE_BACKING_COLOR = QColor(0, 0, 0, 140)  # around the handles, to show on light areas too
+ARROW_START_PX = 14.0  # from the middle, where an arrow's shaft starts
+MOVE_CENTER_RADIUS_PX = 7.0
+SCALE_SQUARE_HALF_PX = 6.5  # from the middle to each side of the square
 
 # The Rotate tool's handle, on screen: a ring around the middle, and a dot
 # on the middle, which it turns around.
@@ -308,8 +313,8 @@ class BrushOutline(QGraphicsEllipseItem):
 class Handles(QGraphicsItem):
     """A transform tool's handles, around the middle of the selection.
     Drawn in screen space, a fixed size at any zoom; the one under the
-    cursor, or being dragged, highlighted. Subclasses draw them and say
-    where they are."""
+    cursor, or being dragged, highlighted. Subclasses draw them, say
+    where they are, and what the mouse cursor shows over each."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -335,61 +340,128 @@ class Handles(QGraphicsItem):
         del offset_px  # each kind of handles knows where its own are
         raise NotImplementedError
 
+    def cursor_over(self, handle: TransformHandle) -> Qt.CursorShape | QCursor:
+        """The mouse cursor over `handle`: what dragging it does."""
+        del handle  # each kind of handles knows what its own do
+        raise NotImplementedError
+
     def _color(self, handle: TransformHandle, color: QColor) -> QColor:
         return ACTIVE_COLOR if handle == self._highlight else color
 
 
-class MoveHandles(Handles):
-    """The Move tool's handles: a disc to drag the selection freely, and
-    arrows -- red along X, green along Y -- to drag it along just that
-    axis."""
+class AxisHandles(Handles):
+    """Handles with an arrow along each axis -- red along X, green along
+    Y -- to drag the selection along just that one, and something in the
+    middle, to drag it every way at once."""
 
-    @override
-    def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
+    square_heads: ClassVar[bool] = False  # whether its arrows' heads are square, not pointed
+
+    def _axis_at(self, offset_px: tuple[float, float]) -> Axis | None:
+        """The arrow at `offset_px` from the middle, if any."""
         x, y = offset_px
-        reach = MOVE_HANDLE_REACH_PX
-        if x * x + y * y <= (MOVE_CENTER_RADIUS_PX + reach) ** 2:
-            return "center"
-        across = MOVE_ARROW_HEAD_HALF_WIDTH_PX + reach
-        if abs(y) <= across and MOVE_ARROW_START_PX - reach <= x <= MOVE_ARROW_TIP_PX + reach:
+        reach = HANDLE_REACH_PX
+        across = ARROW_HEAD_HALF_WIDTH_PX + reach
+        if abs(y) <= across and ARROW_START_PX - reach <= x <= ARROW_TIP_PX + reach:
             return "x"
-        if abs(x) <= across and MOVE_ARROW_START_PX - reach <= -y <= MOVE_ARROW_TIP_PX + reach:
+        if abs(x) <= across and ARROW_START_PX - reach <= -y <= ARROW_TIP_PX + reach:
             return "y"
         return None
 
     @override
     def boundingRect(self) -> QRectF:
-        margin = MOVE_ARROW_HEAD_HALF_WIDTH_PX + 2.0
-        reach = MOVE_ARROW_TIP_PX + 2.0
-        return QRectF(-margin, -reach, reach + margin, reach + margin)
+        reach = ARROW_TIP_PX + 2.0  # every way: what's in the middle, too, whatever its size
+        return QRectF(-reach, -reach, 2 * reach, 2 * reach)
 
-    @override
-    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
-        painter.save()
+    def _paint_arrows(self, painter: QPainter) -> None:
         arrows: tuple[tuple[Axis, QPointF], ...] = (("x", QPointF(1.0, 0.0)), ("y", QPointF(0.0, -1.0)))
         for axis, direction in arrows:
             self._paint_arrow(painter, direction, self._color(axis, AXIS_COLORS[axis]))
-        # Plain pens, not cosmetic: with the view transform ignored, they're already in screen pixels.
-        painter.setPen(QPen(HANDLE_BACKING_COLOR, 1.5))
-        painter.setBrush(self._color("center", MOVE_CENTER_COLOR))
-        painter.drawEllipse(QPointF(0.0, 0.0), MOVE_CENTER_RADIUS_PX, MOVE_CENTER_RADIUS_PX)
-        painter.restore()
 
     def _paint_arrow(self, painter: QPainter, direction: QPointF, color: QColor) -> None:
         """An arrow from the middle along `direction`, a unit vector."""
         across = QPointF(-direction.y(), direction.x())
-        start = direction * MOVE_ARROW_START_PX
-        tip = direction * MOVE_ARROW_TIP_PX
-        base = direction * (MOVE_ARROW_TIP_PX - MOVE_ARROW_HEAD_PX)
-        half = across * MOVE_ARROW_HEAD_HALF_WIDTH_PX
-        head = QPolygonF([tip, base + half, base - half])
-        backing = QPen(HANDLE_BACKING_COLOR, MOVE_ARROW_WIDTH_PX + 2.0)
+        start = direction * ARROW_START_PX
+        tip = direction * ARROW_TIP_PX
+        half = across * ARROW_HEAD_HALF_WIDTH_PX
+        if self.square_heads:
+            base = direction * (ARROW_TIP_PX - 2 * ARROW_HEAD_HALF_WIDTH_PX)
+            head = QPolygonF([base + half, tip + half, tip - half, base - half])
+        else:
+            base = direction * (ARROW_TIP_PX - ARROW_HEAD_PX)
+            head = QPolygonF([tip, base + half, base - half])
+        # Plain pens, not cosmetic: with the view transform ignored, they're already in screen pixels.
+        backing = QPen(HANDLE_BACKING_COLOR, ARROW_WIDTH_PX + 2.0)
         backing.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        for pen, brush in ((backing, HANDLE_BACKING_COLOR), (QPen(color, MOVE_ARROW_WIDTH_PX), color)):
+        for pen, brush in ((backing, HANDLE_BACKING_COLOR), (QPen(color, ARROW_WIDTH_PX), color)):
             painter.setPen(pen)
             painter.drawLine(start, base)
             painter.setBrush(brush)
             painter.drawPolygon(head)
+
+
+class MoveHandles(AxisHandles):
+    """The Move tool's handles: a disc to drag the selection freely, and
+    arrows to drag it along just one axis."""
+
+    @override
+    def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
+        x, y = offset_px
+        if x * x + y * y <= (MOVE_CENTER_RADIUS_PX + HANDLE_REACH_PX) ** 2:
+            return "center"
+        return self._axis_at(offset_px)
+
+    @override
+    def cursor_over(self, handle: TransformHandle) -> Qt.CursorShape | QCursor:
+        match handle:
+            case "x":
+                return Qt.CursorShape.SizeHorCursor
+            case "y":
+                return Qt.CursorShape.SizeVerCursor
+            case "center" | "rotate":
+                return Qt.CursorShape.SizeAllCursor
+
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        painter.save()
+        self._paint_arrows(painter)
+        painter.setPen(QPen(HANDLE_BACKING_COLOR, 1.5))
+        painter.setBrush(self._color("center", HANDLE_CENTER_COLOR))
+        painter.drawEllipse(QPointF(0.0, 0.0), MOVE_CENTER_RADIUS_PX, MOVE_CENTER_RADIUS_PX)
+        painter.restore()
+
+
+class ScaleHandles(AxisHandles):
+    """The Scale tool's handles: a square on the middle to drag the
+    selection bigger or smaller, and square-headed arrows to stretch it
+    along just one axis."""
+
+    square_heads: ClassVar[bool] = True
+
+    @override
+    def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
+        if max(abs(offset_px[0]), abs(offset_px[1])) <= SCALE_SQUARE_HALF_PX + HANDLE_REACH_PX:
+            return "center"
+        return self._axis_at(offset_px)
+
+    @override
+    def cursor_over(self, handle: TransformHandle) -> Qt.CursorShape | QCursor:
+        match handle:
+            case "x":
+                return Qt.CursorShape.SizeHorCursor
+            case "y":
+                return Qt.CursorShape.SizeVerCursor
+            case "center" | "rotate":
+                return Qt.CursorShape.SizeBDiagCursor  # up and right to grow, see Scaling
+
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        painter.save()
+        self._paint_arrows(painter)
+        half = SCALE_SQUARE_HALF_PX
+        painter.setPen(QPen(HANDLE_BACKING_COLOR, 1.5))
+        painter.setBrush(self._color("center", HANDLE_CENTER_COLOR))
+        painter.drawRect(QRectF(-half, -half, 2 * half, 2 * half))
+        painter.restore()
 
 
 class RotateHandle(Handles):
@@ -400,6 +472,11 @@ class RotateHandle(Handles):
     def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
         distance = float(np.hypot(*offset_px))
         return "rotate" if abs(distance - ROTATE_RING_RADIUS_PX) <= ROTATE_RING_REACH_PX else None
+
+    @override
+    def cursor_over(self, handle: TransformHandle) -> Qt.CursorShape | QCursor:
+        del handle  # there's only the ring
+        return rotate_cursor()
 
     @override
     def boundingRect(self) -> QRectF:

@@ -19,7 +19,7 @@ from vectorize_image.edit import points_to_move  # noqa: E402
 from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import CursorGuides  # noqa: E402
-from vectorize_image.gui.tools import MoveTool, RotateTool, handle_cursor  # noqa: E402
+from vectorize_image.gui.tools import MoveTool, RotateTool, ScaleTool  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (110.0, 40.0), (110.0, 110.0), (40.0, 110.0)]
@@ -408,7 +408,7 @@ def test_dragging_a_move_handle_moves_the_selection_along_its_axis(
     press(window, *start)
     move(window, start[0] + 10, start[1] + 6)
     held = tool.handles.highlight  # what's dragged stays highlighted, the cursor showing how it moves
-    assert held is not None and window.canvas.viewport().cursor().shape() == handle_cursor(held)
+    assert held is not None and window.canvas.viewport().cursor().shape() == tool.handles.cursor_over(held)
     assert tool.handles.pos().x() == pytest.approx(75 + moved[0], abs=TOLERANCE)  # following the drag
     assert tool.handles.pos().y() == pytest.approx(75 + moved[1], abs=TOLERANCE)
     release(window, start[0] + 10, start[1] + 6)
@@ -568,6 +568,112 @@ def test_rotating_points_turns_them_around_their_own_middle(window: MainWindow, 
     assert np.allclose(drawing.position(first), CORNERS[1], atol=QUARTER_TURN_TOLERANCE)
     assert np.allclose(drawing.position(second), CORNERS[0], atol=QUARTER_TURN_TOLERANCE)
     assert window.document.history.undo_text() == "Rotate Points"
+
+
+# ----------------------------------------------------------------- scale
+
+
+def _scale_tool(window: MainWindow) -> ScaleTool[Element]:
+    return window.edit_tool.scale_tool
+
+
+def _scaled_corner(factors: tuple[float, float]) -> tuple[float, float]:
+    """Where the square's top-left corner goes, scaled by `factors` from its middle, (75, 75)."""
+    return (75 + (CORNERS[0][0] - 75) * factors[0], 75 + (CORNERS[0][1] - 75) * factors[1])
+
+
+def test_scale_from_its_button_shows_a_square_and_arrows(window: MainWindow, diamond_path: str) -> None:
+    _select_square_to_rotate(window, diamond_path)
+    window.scale_tool_action.trigger()
+    tool = _scale_tool(window)
+    assert window.edit_tool.select_tool is tool and not tool.grabbing
+    handles, viewport, scale = tool.handles, window.canvas.viewport(), window.canvas.scene_distance(1.0)
+    assert handles.isVisible() and (handles.pos().x(), handles.pos().y()) == pytest.approx((75, 75))
+
+    move(window, 75 + 6 * scale, 75 - 6 * scale)  # by its corner
+    assert handles.highlight == "center" and viewport.cursor().shape() == Qt.CursorShape.SizeBDiagCursor
+    move(window, 75, 75)  # its very middle
+    assert handles.highlight == "center"
+    move(window, 75 + 50 * scale, 75)
+    assert handles.highlight == "x" and viewport.cursor().shape() == Qt.CursorShape.SizeHorCursor
+    move(window, 75, 75 - 50 * scale)
+    assert handles.highlight == "y" and viewport.cursor().shape() == Qt.CursorShape.SizeVerCursor
+    move(window, 75 + 30 * scale, 75 - 30 * scale)  # between the arrows: nothing there to drag
+    assert handles.highlight is None
+
+
+# A drag on the square goes by SCALE_DOUBLE_PX, 100 px, up and right -- here √2 · 70.7 px -- to double.
+@pytest.mark.parametrize(
+    ("start_px", "end_px", "axis", "expected"),
+    [
+        ((2, -1), (72.7, -71.7), None, (2.0, 2.0)),
+        ((0, 0), (-35.4, 35.4), None, (0.5, 0.5)),
+        ((50, 0), (75, 20), "x", (1.5, 1.0)),
+        ((0, -50), (10, -25), "y", (1.0, 0.5)),
+    ],
+)
+def test_dragging_a_scale_handle_scales_the_selection(
+    window: MainWindow,
+    diamond_path: str,
+    start_px: tuple[float, float],
+    end_px: tuple[float, float],
+    axis: str | None,
+    expected: tuple[float, float],
+) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    window.scale_tool_action.trigger()
+    tool, scale = _scale_tool(window), window.canvas.scene_distance(1.0)
+    start = (75 + start_px[0] * scale, 75 + start_px[1] * scale)
+    end = (75 + end_px[0] * scale, 75 + end_px[1] * scale)
+
+    move(window, *start)
+    press(window, *start)
+    move(window, *end)
+    factors = tool.factors
+    assert factors == pytest.approx(expected, abs=0.1)
+    assert factors[0 if axis == "y" else 1] == (1.0 if axis is not None else factors[0])  # the other axis kept
+    assert np.allclose(drawing.position(corner), CORNERS[0])  # previewed, not scaled yet
+    release(window, *end)
+
+    assert np.allclose(drawing.position(corner), _scaled_corner(factors))
+    assert window.document.history.undo_text() == "Scale Polygons"
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+
+
+def test_s_scales_the_selection_with_the_cursor_until_a_click(window: MainWindow, diamond_path: str) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    _grab(window, 125, 75, Qt.Key.Key_S)  # 50 from the middle
+    tool = _scale_tool(window)
+    assert window.scale_tool_action.isChecked() and window.edit_tool.select_tool is tool
+    assert tool.grabbing and not tool.handles.isVisible()
+
+    move(window, 100, 75)  # halfway there: half the size
+    assert tool.factors == pytest.approx((0.5, 0.5), abs=0.02)
+    assert "scaling 1 polygon by 0.50×" in window.statusBar().currentMessage()
+    key(window, Qt.Key.Key_X)  # just along X
+    assert tool.factors == pytest.approx((0.5, 1.0), abs=0.02)
+    assert tool.axis_guide.axis == "x"
+    move(window, 101, 80, shift=True)  # snapped to a tenth
+    assert tool.factors == pytest.approx((0.5, 1.0))
+    click(window, 101, 80, shift=True)
+
+    assert not tool.grabbing
+    assert np.allclose(drawing.position(corner), _scaled_corner((0.5, 1.0)))
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+
+
+def test_escape_cancels_scaling(window: MainWindow, diamond_path: str) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    _grab(window, 125, 75, Qt.Key.Key_S)
+    move(window, 150, 75)
+
+    key(window, Qt.Key.Key_Escape)
+
+    assert not _scale_tool(window).grabbing and not _drawing_item(window, drawing).grabbed
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+    assert not window.document.history.can_undo()
 
 
 def test_g_grabs_the_selection_to_move_with_the_cursor_until_a_click(window: MainWindow, diamond_path: str) -> None:

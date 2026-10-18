@@ -499,6 +499,18 @@ class VectorDrawing:
         positions = np.array([self.position(point) for point in points])
         self.place(dict(zip(points, rotated(positions, center, angle))))
 
+    def scale(self, points: Iterable[Point], center: PointLike, factors: PointLike) -> None:
+        """Stretch points away from `center` -- or squeeze them toward it
+        -- by `factors`, (x, y): each point's offset from it, times those.
+        Lines stay exact, as for rotate. A factor can be negative, which
+        mirrors them, or zero, which flattens them onto the center's line.
+        """
+        points = list(points)
+        if not points:
+            return
+        positions = np.array([self.position(point) for point in points])
+        self.place(dict(zip(points, scaled(positions, center, factors))))
+
     def place(self, positions: Mapping[Point, PointLike]) -> None:
         """Move points to the given absolute positions, as one change --
         and with them every line made from them and every polygon those
@@ -531,6 +543,12 @@ def rotated(positions: np.ndarray, center: PointLike, angle: float) -> np.ndarra
     origin = np.asarray(center, dtype=float)
     offsets = np.asarray(positions, dtype=float) - origin
     return origin + offsets @ np.array([[cos, sin], [-sin, cos]])
+
+
+def scaled(positions: np.ndarray, center: PointLike, factors: PointLike) -> np.ndarray:
+    """`positions`, (n, 2), stretched away from `center` by `factors` (see VectorDrawing.scale)."""
+    origin = np.asarray(center, dtype=float)
+    return origin + (np.asarray(positions, dtype=float) - origin) * np.asarray(factors, dtype=float)
 
 
 def duplicate(fragment: Fragment) -> Fragment:

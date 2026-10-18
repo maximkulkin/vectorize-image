@@ -25,11 +25,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from typing import ClassVar, Final, override
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QGraphicsItem
 
 from .. import pen
@@ -49,11 +49,13 @@ from ..document import (
     Remove,
     RemoveItems,
     Rotate,
+    Scale,
     Selectable,
     Selection,
     Translate,
     VectorDrawing,
     rotated,
+    scaled,
 )
 from ..document.hit_test import (
     box,
@@ -81,7 +83,6 @@ from ..edit import (
 from ..signals import Signal, disconnect
 from ..typedefs import Axis, Bezier, PointLike, TransformHandle
 from .canvas import Canvas
-from .cursors import rotate_cursor
 from .document_items import GRAB_COLOR, POINT_RADIUS_PX
 from .overlays import (
     ACTIVE_COLOR,
@@ -100,9 +101,12 @@ from .overlays import (
     MoveHandles,
     PointPreview,
     RotateHandle,
+    ScaleHandles,
 )
 
 ROTATE_SNAP_DEGREES = 15.0  # what Shift snaps a rotation's angle to steps of
+SCALE_SNAP_STEP = 0.1  # ... and a scale's factor
+SCALE_DOUBLE_PX = 100.0  # how far (on screen) dragging Scale's square up and right doubles the size
 SNAP_RADIUS_PX = 12.0  # how close (on screen) the cursor must be to hit/snap to something
 PAINT_SELECT_DEFAULT_RADIUS_PX = 30.0
 START_MARKER_RADIUS_PX = 6.5
@@ -247,19 +251,6 @@ def _handle_axis(handle: TransformHandle) -> Axis | None:
             return handle
         case "center" | "rotate":
             return None
-
-
-def handle_cursor(handle: TransformHandle) -> Qt.CursorShape | QCursor:
-    """The mouse cursor over `handle`: what dragging it does."""
-    match handle:
-        case "center":
-            return Qt.CursorShape.SizeAllCursor
-        case "x":
-            return Qt.CursorShape.SizeHorCursor
-        case "y":
-            return Qt.CursorShape.SizeVerCursor
-        case "rotate":
-            return rotate_cursor()
 
 
 def _grab_hint(selection: Selection, axis: Axis | None) -> str:
@@ -589,33 +580,40 @@ class ItemsMoving(Moving):
         return MoveItems(self.items, delta, "Move Object" if len(self.items) == 1 else "Move Objects")
 
 
-class Rotating(Moving):
-    """Points of drawings, turned around `center` -- by as much as the
-    cursor has turned around it since the drag started."""
+@dataclass(frozen=True)
+class PivotParts:
+    """What turning or scaling the selection transforms: points of
+    drawings, around `center` -- and what to call them, in an undo step
+    ("Polygons", "Object")."""
 
-    def __init__(
-        self, canvas: Canvas, points: dict[VectorDrawing, frozenset[Point]], center: tuple[float, float], text: str
-    ) -> None:
+    points: dict[VectorDrawing, frozenset[Point]]
+    center: tuple[float, float]
+    noun: str
+
+
+class PivotMoving(Moving, ABC):
+    """Points of drawings, transformed around a center -- by how the
+    cursor has moved, relative to the center, since the drag started.
+    `snap` and `axis` say how: to whole steps of whatever it does, and
+    along just one axis; the tool sets them as the drag goes on."""
+
+    verb: ClassVar[str]  # what it does, for its undo step's text: "Rotate"
+
+    def __init__(self, canvas: Canvas, parts: PivotParts) -> None:
         self.canvas: Canvas = canvas
-        self.points: dict[VectorDrawing, tuple[Point, ...]] = {drawing: tuple(ps) for drawing, ps in points.items()}
-        self.center: tuple[float, float] = center
-        self.text: str = text
+        self.points: dict[VectorDrawing, tuple[Point, ...]] = {d: tuple(ps) for d, ps in parts.points.items()}
+        self.center: tuple[float, float] = parts.center
+        self.text: str = f"{self.verb} {parts.noun}"
         self._positions: dict[VectorDrawing, np.ndarray] = {
             drawing: np.array([drawing.position(point) for point in ps]) for drawing, ps in self.points.items()
         }
-        self._origin: tuple[float, float] = center  # where the cursor started, once it's begun
-        self._start_angle: float = 0.0
-        self.step: float | None = None  # what the angle snaps to whole multiples of, if it does
+        self._origin: tuple[float, float] = parts.center  # where the cursor started, once it's begun
+        self.snap: bool = False
+        self.axis: Axis | None = None
 
-    def _angle_to(self, pos: tuple[float, float]) -> float:
-        return float(np.arctan2(pos[1] - self.center[1], pos[0] - self.center[0]))
-
-    def angle(self, delta: tuple[float, float]) -> float:
-        """How far it's turned, in radians, with the cursor `delta` from
-        where it started -- to the nearest whole `step`, if there is one."""
-        origin = self._origin
-        angle = self._angle_to((origin[0] + delta[0], origin[1] + delta[1])) - self._start_angle
-        return angle if self.step is None else round(angle / self.step) * self.step
+    def _cursor(self, delta: tuple[float, float]) -> tuple[float, float]:
+        """Where the cursor is, `delta` from where it started."""
+        return (self._origin[0] + delta[0], self._origin[1] + delta[1])
 
     @override
     def middle(self) -> tuple[float, float]:
@@ -623,19 +621,25 @@ class Rotating(Moving):
 
     @override
     def moved_middle(self, delta: tuple[float, float]) -> tuple[float, float]:
-        return self.center  # what it turns around stays put
+        return self.center  # what it's done around stays put
 
     @override
     def begin(self, origin: tuple[float, float]) -> None:
         self._origin = origin
-        self._start_angle = self._angle_to(origin)
+
+    @abstractmethod
+    def transformed(self, positions: np.ndarray, delta: tuple[float, float]) -> np.ndarray:
+        """`positions`, (n, 2), transformed as the cursor `delta` from where it started says."""
+
+    @abstractmethod
+    def _command(self, drawing: VectorDrawing, points: tuple[Point, ...], delta: tuple[float, float]) -> Command:
+        """The command that transforms `points` of `drawing` so."""
 
     @override
     def preview(self, delta: tuple[float, float], grabbed: bool) -> None:
-        angle = self.angle(delta)
         for drawing, points in self.points.items():
             positions = self._positions[drawing]
-            offsets = rotated(positions, self.center, angle) - positions
+            offsets = self.transformed(positions, delta) - positions
             self.canvas.preview_move(drawing, dict(zip(points, offsets)), grabbed)
 
     @override
@@ -645,15 +649,94 @@ class Rotating(Moving):
 
     @override
     def command(self, delta: tuple[float, float]) -> Command:
-        angle = self.angle(delta)
-        commands = [Rotate(drawing, points, self.center, angle, self.text) for drawing, points in self.points.items()]
+        commands = [self._command(drawing, points, delta) for drawing, points in self.points.items()]
         return commands[0] if len(commands) == 1 else Batch(commands, self.text)
 
 
+class Rotating(PivotMoving):
+    """Turned around the center by as much as the cursor has turned
+    around it -- snapped to ROTATE_SNAP_DEGREES steps."""
+
+    verb: ClassVar[str] = "Rotate"
+
+    def __init__(self, canvas: Canvas, parts: PivotParts) -> None:
+        super().__init__(canvas, parts)
+        self._start_angle: float = 0.0
+
+    def _angle_to(self, pos: tuple[float, float]) -> float:
+        return float(np.arctan2(pos[1] - self.center[1], pos[0] - self.center[0]))
+
+    def angle(self, delta: tuple[float, float]) -> float:
+        """How far it's turned, in radians, with the cursor `delta` from
+        where it started -- to the nearest whole step, if snapping."""
+        angle = self._angle_to(self._cursor(delta)) - self._start_angle
+        step = float(np.radians(ROTATE_SNAP_DEGREES))
+        return round(angle / step) * step if self.snap else angle
+
+    @override
+    def begin(self, origin: tuple[float, float]) -> None:
+        super().begin(origin)
+        self._start_angle = self._angle_to(origin)
+
+    @override
+    def transformed(self, positions: np.ndarray, delta: tuple[float, float]) -> np.ndarray:
+        return rotated(positions, self.center, self.angle(delta))
+
+    @override
+    def _command(self, drawing: VectorDrawing, points: tuple[Point, ...], delta: tuple[float, float]) -> Command:
+        return Rotate(drawing, points, self.center, self.angle(delta), self.text)
+
+
+class Scaling(PivotMoving):
+    """Stretched away from the center, or squeezed toward it, as the
+    cursor is: every way at once by how much farther from the center it
+    is than it started; or, along an axis, by how much farther along that
+    -- which can go past the center, mirroring. Snapped to
+    SCALE_SNAP_STEP steps. Pressed close to the center, where how far
+    from it the cursor started says little, a `corner` distance makes it
+    scale every way as if the cursor had pressed on a corner that far up
+    and to the right of the center instead: dragging up and right grows
+    it, down and left shrinks it."""
+
+    verb: ClassVar[str] = "Scale"
+
+    def __init__(self, canvas: Canvas, parts: PivotParts, corner: float | None = None) -> None:
+        super().__init__(canvas, parts)
+        self.corner: float | None = corner
+
+    def factors(self, delta: tuple[float, float]) -> tuple[float, float]:
+        """What it's scaled by, (x, y), with the cursor `delta` from where it started."""
+        cursor, origin, center = self._cursor(delta), self._origin, self.center
+        if self.axis is None and self.corner is not None:
+            toward = (delta[0] - delta[1]) / np.sqrt(2.0)  # up and right: y grows down
+            factor = self._snapped((self.corner + toward) / self.corner)
+            return (factor, factor)
+        if self.axis is None:
+            start = float(np.hypot(origin[0] - center[0], origin[1] - center[1]))
+            now = float(np.hypot(cursor[0] - center[0], cursor[1] - center[1]))
+            factor = self._snapped(now / start if start > 0 else 1.0)
+            return (factor, factor)
+        index = 0 if self.axis == "x" else 1
+        start = origin[index] - center[index]
+        factor = self._snapped((cursor[index] - center[index]) / start if start != 0 else 1.0)
+        return (factor, 1.0) if self.axis == "x" else (1.0, factor)
+
+    def _snapped(self, factor: float) -> float:
+        return round(factor / SCALE_SNAP_STEP) * SCALE_SNAP_STEP if self.snap else factor
+
+    @override
+    def transformed(self, positions: np.ndarray, delta: tuple[float, float]) -> np.ndarray:
+        return scaled(positions, self.center, self.factors(delta))
+
+    @override
+    def _command(self, drawing: VectorDrawing, points: tuple[Point, ...], delta: tuple[float, float]) -> Command:
+        return Scale(drawing, points, self.center, self.factors(delta), self.text)
+
+
 class MoveTarget[T: Selectable](ABC):
-    """One mode's side of moving and rotating, for MoveTool and
-    RotateTool: what there is to hit under the cursor, of type T; the
-    feedback on it; and what a drag moves or turns."""
+    """One mode's side of moving, rotating and scaling, for MoveTool and
+    its subclasses: what there is to hit under the cursor, of type T; the
+    feedback on it; and what a drag moves or transforms."""
 
     selected_hint: ClassVar[str] = ""  # the status bar's tip on what else to do with a selection
 
@@ -693,8 +776,8 @@ class MoveTarget[T: Selectable](ABC):
         """What moving the selection moves, if anything."""
 
     @abstractmethod
-    def selection_rotating(self) -> Rotating | None:
-        """What rotating the selection turns, if anything -- around its middle."""
+    def selection_pivot(self) -> PivotParts | None:
+        """What rotating or scaling the selection transforms, if anything -- around its middle."""
 
 
 class ElementTarget(MoveTarget[Element]):
@@ -756,15 +839,14 @@ class ElementTarget(MoveTarget[Element]):
         return PointsMoving(self.canvas, drawing, points, f"Move {mode.title()}") if points else None
 
     @override
-    def selection_rotating(self) -> Rotating | None:
+    def selection_pivot(self) -> PivotParts | None:
         mode, drawing = self.selection.mode, self.selection.drawing
         if mode == "objects" or drawing is None:
             return None
         middle = middle_of(drawing, self.selection.elements)
         if middle is None:
             return None
-        points = points_to_move(drawing, self.selection.elements)
-        return Rotating(self.canvas, {drawing: points}, middle, f"Rotate {mode.title()}")
+        return PivotParts({drawing: points_to_move(drawing, self.selection.elements)}, middle, mode.title())
 
 
 class ItemTarget(MoveTarget[Item]):
@@ -814,16 +896,16 @@ class ItemTarget(MoveTarget[Item]):
         return ItemsMoving(self.canvas, items) if items else None
 
     @override
-    def selection_rotating(self) -> Rotating | None:
-        """The selected drawings -- not images, which don't turn -- around
-        the middle of the box around them all."""
+    def selection_pivot(self) -> PivotParts | None:
+        """The selected drawings -- not images, which don't turn or scale
+        -- around the middle of the box around them all."""
         objects = self.selection.objects if self.selection.mode == "objects" else frozenset[Item]()
         drawings = [item for item in objects if isinstance(item, VectorDrawing) and item]
         if not drawings:
             return None
         middle = _middle(corner for drawing in drawings for corner in item_bounds(drawing))
-        text = "Rotate Object" if len(drawings) == 1 else "Rotate Objects"
-        return Rotating(self.canvas, {drawing: frozenset(drawing.points) for drawing in drawings}, middle, text)
+        noun = "Object" if len(drawings) == 1 else "Objects"
+        return PivotParts({drawing: frozenset(drawing.points) for drawing in drawings}, middle, noun)
 
 
 class MoveTool[T: Selectable](SelectTool):
@@ -836,8 +918,8 @@ class MoveTool[T: Selectable](SelectTool):
     grab the selection (see start_grab). Either way the move is previewed
     on the canvas, without changing anything, and committed as one
     command. What there is to hit, highlight and move is the mode's: the
-    target's. TweakTool selects on press differently; RotateTool turns
-    what it drags instead."""
+    target's. TweakTool selects on press differently; RotateTool and
+    ScaleTool transform what they drag instead."""
 
     name: ClassVar[str] = "move"
     handles_type: ClassVar[type[Handles]] = MoveHandles
@@ -931,6 +1013,11 @@ class MoveTool[T: Selectable](SelectTool):
     def _selection_moving(self) -> Moving | None:
         """What dragging the selection does to it: moves it."""
         return self.target.selection_moving()
+
+    def _handle_moving(self, handle: TransformHandle) -> Moving | None:
+        """What dragging `handle` does to the selection: as dragging it does, by default."""
+        del handle
+        return self._selection_moving()
 
     def _moving_alone(self, hit: T | None, shift: bool) -> Moving | None:
         """What dragging `hit` on its own does, if it's dragged that way (see MoveTarget.moving_alone)."""
@@ -1077,7 +1164,7 @@ class MoveTool[T: Selectable](SelectTool):
         show what dragging it does with the cursor's shape."""
         if handle != self._handles.highlight:
             self._handles.set_highlight(handle)
-            self.canvas.set_tool_cursor(None if handle is None else handle_cursor(handle))
+            self.canvas.set_tool_cursor(None if handle is None else self._handles.cursor_over(handle))
             self.status_changed.emit()
 
     @override
@@ -1098,7 +1185,7 @@ class MoveTool[T: Selectable](SelectTool):
             self._commit()
             return
         handle = self._handle_at(pos)
-        moving = self._selection_moving() if handle is not None else None
+        moving = self._handle_moving(handle) if handle is not None else None
         if handle is not None and moving is not None:
             self._pressed = (None, shift)
             self._start_drag(pos, moving, None)
@@ -1189,16 +1276,60 @@ class TweakTool[T: Selectable](MoveTool[T]):
         return _tweak_hint(self.selection)
 
 
-class RotateTool[T: Selectable](MoveTool[T]):
-    """Rotate: as Move, but what a drag does is turn the selection around
-    its middle, by as much as the cursor turns around it. With its handle
-    shown (see set_handles), a ring around the middle, drag that, or
-    press as Tweak does off it; without, drag anywhere. Or grab the
-    selection (see start_grab), turning it with the cursor until a
-    click. Holding Shift snaps the angle to whole ROTATE_SNAP_DEGREES
-    steps. Only drawings turn -- the points, lines and polygons of one,
-    or whole ones -- not images; and nothing turns on its own, the way
-    Move drags a control point, nor keeps to an axis."""
+class PivotTool[T: Selectable](MoveTool[T]):
+    """A tool that, as Move, drags the selection -- by its handles, or
+    from anywhere without them -- or grabs it, but transforms it around
+    its middle instead of moving it: RotateTool or ScaleTool. Holding
+    Shift snaps it to whole steps of whatever it does. Only drawings
+    transform -- the points, lines and polygons of one, or whole ones --
+    not images; and nothing does on its own, the way Move drags a control
+    point."""
+
+    @property
+    def pivot_moving(self) -> PivotMoving | None:
+        """What a drag in progress transforms, if anything."""
+        return self._moving if isinstance(self._moving, PivotMoving) else None
+
+    @override
+    def _moving_alone(self, hit: T | None, shift: bool) -> Moving | None:
+        del hit, shift  # nothing transforms on its own
+        return None
+
+    @override
+    def _set_active(self, target: T | None) -> None:
+        del target  # what was pressed on transforms with the rest, not shifted as a highlight would be
+        super()._set_active(None)
+
+    @override
+    def _drag_to(self, pos: tuple[float, float]) -> None:
+        moving = self.pivot_moving
+        if moving is not None:
+            moving.snap = self.canvas.shift_held
+            moving.axis = self._axis
+        super()._drag_to(pos)
+        if self.dragging:
+            self.status_changed.emit()  # how far, in the hint
+
+    @override
+    def on_modifiers_changed(self) -> None:
+        if self.dragging:
+            self._drag_to(self._pos)  # snapping, or not any more
+
+    def _selected_hint(self, handles: str, verb: str) -> str:
+        """The status bar's tip, not dragging: `handles` says what dragging them does."""
+        if self._handles_shown:
+            if self.selection:
+                return f"{_describe(self.selection)} selected · {handles}, click to select, {self.target.selected_hint}"
+            return f"click {_one(self.selection)} to select it (shift-click for more), or drag it to {verb} it"
+        if self.selection:
+            return f"{_describe(self.selection)} selected · drag anywhere to {verb}, {self.target.selected_hint}"
+        return f"drag {_one(self.selection)} to select and {verb} it"
+
+
+class RotateTool[T: Selectable](PivotTool[T]):
+    """Rotate: what a drag does is turn the selection around its middle,
+    by as much as the cursor turns around it (see Rotating). Its handle,
+    when shown, is a ring around the middle. A turn keeps to no axis."""
 
     name: ClassVar[str] = "rotate"
     handles_type: ClassVar[type[Handles]] = RotateHandle
@@ -1207,38 +1338,15 @@ class RotateTool[T: Selectable](MoveTool[T]):
     def angle(self) -> float:
         """How far a drag in progress has turned what it turns, in radians
         -- clockwise on screen -- between -pi and pi."""
-        moving = self._moving
+        moving = self.pivot_moving
         if not isinstance(moving, Rotating):
             return 0.0
         return float(np.angle(np.exp(1j * moving.angle(self._delta))))
 
     @override
     def _selection_moving(self) -> Moving | None:
-        """What dragging the selection does to it: turns it."""
-        return self.target.selection_rotating()
-
-    @override
-    def _moving_alone(self, hit: T | None, shift: bool) -> Moving | None:
-        del hit, shift  # nothing turns on its own
-        return None
-
-    @override
-    def _set_active(self, target: T | None) -> None:
-        del target  # what was pressed on turns with the rest, not shifted as a highlight would be
-        super()._set_active(None)
-
-    @override
-    def _drag_to(self, pos: tuple[float, float]) -> None:
-        if isinstance(self._moving, Rotating):
-            self._moving.step = float(np.radians(ROTATE_SNAP_DEGREES)) if self.canvas.shift_held else None
-        super()._drag_to(pos)
-        if self.dragging:
-            self.status_changed.emit()  # the angle, in the hint
-
-    @override
-    def on_modifiers_changed(self) -> None:
-        if self.dragging:
-            self._drag_to(self._pos)  # snapping, or not any more
+        parts = self.target.selection_pivot()
+        return Rotating(self.canvas, parts) if parts is not None else None
 
     @override
     def on_key(self, key: Qt.Key) -> bool:
@@ -1253,16 +1361,55 @@ class RotateTool[T: Selectable](MoveTool[T]):
             return f"{turned} · {snap}, click to place, Esc to cancel" if self._grabbing else f"{turned} · {snap}"
         if self._handles.highlight == "rotate":
             return f"drag to rotate {_describe(self.selection)}"
-        if self._handles_shown:
-            if self.selection:
-                return (
-                    f"{_describe(self.selection)} selected · drag the ring to rotate, "
-                    f"click to select, {self.target.selected_hint}"
-                )
-            return f"click {_one(self.selection)} to select it (shift-click for more), or drag it to rotate it"
-        if self.selection:
-            return f"{_describe(self.selection)} selected · drag anywhere to rotate, {self.target.selected_hint}"
-        return f"drag {_one(self.selection)} to select and rotate it"
+        return self._selected_hint("drag the ring to rotate", "rotate")
+
+
+class ScaleTool[T: Selectable](PivotTool[T]):
+    """Scale: what a drag does is stretch the selection away from its
+    middle, or squeeze it toward it (see Scaling) -- every way at once,
+    or, kept to an axis, along just that one. Its handles, when shown,
+    are a square on the middle, to scale it every way, and an arrow for
+    each axis; X or Y keeps a grab to one."""
+
+    name: ClassVar[str] = "scale"
+    handles_type: ClassVar[type[Handles]] = ScaleHandles
+
+    @property
+    def factors(self) -> tuple[float, float]:
+        """What a drag in progress has scaled what it scales by, (x, y)."""
+        moving = self.pivot_moving
+        return moving.factors(self._delta) if isinstance(moving, Scaling) else (1.0, 1.0)
+
+    @override
+    def _selection_moving(self) -> Moving | None:
+        parts = self.target.selection_pivot()
+        return Scaling(self.canvas, parts) if parts is not None else None
+
+    @override
+    def _handle_moving(self, handle: TransformHandle) -> Moving | None:
+        if handle != "center":
+            return super()._handle_moving(handle)
+        parts = self.target.selection_pivot()  # pressed on, or near, the middle: see Scaling
+        return Scaling(self.canvas, parts, self.canvas.scene_distance(SCALE_DOUBLE_PX)) if parts is not None else None
+
+    @override
+    def status_hint(self) -> str:
+        if self.dragging:
+            along = "" if self._axis is None else f" along {self._axis.upper()}"
+            factor = self.factors[1 if self._axis == "y" else 0]
+            scaling = f"scaling {_describe(self.selection)}{along} by {factor:.2f}×"
+            snap = f"Shift to snap to {SCALE_SNAP_STEP:g}"
+            if self._grabbing:
+                return f"{scaling} · {snap}, X or Y to keep to one axis, click to place, Esc to cancel"
+            return f"{scaling} · {snap}"
+        match self._handles.highlight:
+            case "center":
+                return f"drag to scale {_describe(self.selection)}"
+            case "x" | "y" as axis:
+                return f"drag to scale {_describe(self.selection)} along {axis.upper()}"
+            case "rotate" | None:
+                pass
+        return self._selected_hint("drag the square up and right to grow, down and left to shrink, an arrow to scale along X or Y", "scale")
 
 
 class BoxSelectTool(SelectTool):
@@ -1545,10 +1692,10 @@ class AddPointTool(Operation):
 
 class SelectingTool[T: Selectable](Tool):
     """A mode -- edit or object -- whose canvas input all goes to one of
-    its sub-tools: Tweak, Box or Paint Select, Move or Rotate, which the
-    main window keeps the same in both modes. Tweak, Move and Rotate each
-    move or turn what their own `make_target` makes: the mode's
-    MoveTarget."""
+    its sub-tools: Tweak, Box or Paint Select, Move, Rotate or Scale,
+    which the main window keeps the same in both modes. Tweak, Move,
+    Rotate and Scale each move or transform what their own `make_target`
+    makes: the mode's MoveTarget."""
 
     captures_mouse: ClassVar[bool] = True
 
@@ -1561,8 +1708,13 @@ class SelectingTool[T: Selectable](Tool):
         self.paint_tool: PaintSelectTool = PaintSelectTool(document, canvas)
         self.move_tool: MoveTool[T] = MoveTool(document, canvas, make_target(document, canvas))
         self.rotate_tool: RotateTool[T] = RotateTool(document, canvas, make_target(document, canvas))
+        self.scale_tool: ScaleTool[T] = ScaleTool(document, canvas, make_target(document, canvas))
+        # The ones with handles, and a grab of their own -- G, R and S.
+        self.transform_tools: dict[str, MoveTool[T]] = {
+            t.name: t for t in (self.move_tool, self.rotate_tool, self.scale_tool)
+        }
         self._select_tools: dict[str, SelectTool] = {
-            t.name: t for t in (self.tweak_tool, self.box_tool, self.paint_tool, self.move_tool, self.rotate_tool)
+            t.name: t for t in (self.tweak_tool, self.box_tool, self.paint_tool, *self.transform_tools.values())
         }
         self.select_tool: SelectTool = self.tweak_tool
         # A one-off gesture (see Operation) that has the input instead of

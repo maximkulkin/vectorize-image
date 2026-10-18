@@ -158,11 +158,12 @@ def test_tab_toggles_edit_mode(window: MainWindow, diamond_path: str) -> None:
     assert window.tool is window.object_tool
 
 
-def test_select_tools_share_a_dropdown_before_move_rotate_and_pen(window: MainWindow) -> None:
+def test_select_tools_share_a_dropdown_before_the_transform_tools_and_pen(window: MainWindow) -> None:
     toolbar = next(bar for bar in window.findChildren(QToolBar) if bar.windowTitle() == "Tools")
-    first, *rest = toolbar.actions()[:4]
+    first, *rest = toolbar.actions()[:5]
     assert toolbar.widgetForAction(first) is window.select_tool_button
-    assert rest == [window.move_tool_action, window.rotate_tool_action, window.trace_tool_action]
+    transforms = [window.move_tool_action, window.rotate_tool_action, window.scale_tool_action]
+    assert rest == [*transforms, window.trace_tool_action]
 
     menu = window.select_tool_button.menu()
     assert menu is not None
@@ -365,7 +366,24 @@ def test_r_rotates_the_selected_drawings_around_their_middle(window: MainWindow,
     assert np.allclose(_positions(drawing), before) and np.allclose(_positions(other), other_before)
 
 
-def test_images_dont_rotate(window: MainWindow, diamond_path: str) -> None:
+def test_s_scales_the_selected_drawings_from_their_middle(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    other = _add_square(window, 100)
+    before, other_before = _positions(drawing), _positions(other)
+    click(window, 55, 55)
+    click(window, 115, 115, shift=True)  # the squares span 40 to 130: their middle is (85, 85)
+
+    _shortcut_at(window, 135, 85, Qt.Key.Key_S)  # 50 from the middle
+    tool = window.object_tool.scale_tool
+    assert window.object_tool.select_tool is tool and tool.grabbing
+    click(window, 185, 85, shift=True)  # twice as far: twice the size
+
+    assert np.allclose(_positions(drawing), 85 + (before - 85) * 2)
+    assert np.allclose(_positions(other), 85 + (other_before - 85) * 2)
+    assert window.document.history.undo_text() == "Scale Objects"
+
+
+def test_images_dont_rotate_or_scale(window: MainWindow, diamond_path: str) -> None:
     image, _ = _open_with_square(window, diamond_path)
     window.document.current_layer = _layer(window, "Image")
     click(window, 75, 75)
@@ -376,6 +394,9 @@ def test_images_dont_rotate(window: MainWindow, diamond_path: str) -> None:
     assert not tool.handles.isVisible()  # nothing to turn: no ring
     _shortcut_at(window, 100, 75, Qt.Key.Key_R)
     assert window.object_tool.select_tool is tool and not tool.grabbing
+    _shortcut_at(window, 100, 75, Qt.Key.Key_S)  # nor scale
+    assert window.object_tool.select_tool is window.object_tool.scale_tool
+    assert not window.object_tool.scale_tool.grabbing
 
 
 def _shortcut_at(window: MainWindow, x: float, y: float, which: Qt.Key) -> None:

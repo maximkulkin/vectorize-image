@@ -67,7 +67,8 @@ def test_starts_in_object_mode_with_nothing_open(window: MainWindow) -> None:
     assert window.statusBar().currentMessage() == "Open an image to get started."
     tool_actions = window._tool_action_group.actions()
     selects = [window.tweak_action, window.box_select_action, window.paint_select_action]
-    assert tool_actions == [*selects, window.move_tool_action, window.rotate_tool_action, window.trace_tool_action]
+    transforms = [window.move_tool_action, window.rotate_tool_action, window.scale_tool_action]
+    assert tool_actions == [*selects, *transforms, window.trace_tool_action]
     assert window.tweak_action.isChecked()
 
 
