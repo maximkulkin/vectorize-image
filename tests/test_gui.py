@@ -85,7 +85,7 @@ def test_loading_an_image_builds_image_and_drawing_layers(window: MainWindow, do
     assert not _drawing(window)
     assert window.canvas.sceneRect() == QRectF(0, 0, 100, 100)
     assert not window.document.history.can_undo()
-    assert not window.save_action.isEnabled()
+    assert not window.export_svg_action.isEnabled()
 
 
 def test_loading_an_image_traces_its_edges_for_the_pen(window: MainWindow, donut_path: str) -> None:
@@ -140,34 +140,34 @@ def test_loading_a_new_image_starts_over(window: MainWindow, donut_path: str, tm
     assert not shiboken6.isValid(old_item)
     assert not _drawing(window)
     assert window.image is not None and window.image.size == (50, 50)
-    assert not window.save_action.isEnabled() and not window.undo_action.isEnabled()
+    assert not window.export_svg_action.isEnabled() and not window.undo_action.isEnabled()
 
 
-# ------------------------------------------------------------------ save
+# ---------------------------------------------------------------- export
 
 
-def _save_to(window: MainWindow, out_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _export_to(window: MainWindow, out_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_save_dialog(*_args: object, **_kwargs: object) -> tuple[str, str]:
         return (str(out_path), "")
 
     monkeypatch.setattr("vectorize_image.gui.main_window.QFileDialog.getSaveFileName", fake_save_dialog)
-    window._save_svg()
+    window._export_svg()
 
 
-def test_save_svg_writes_the_document(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_export_svg_writes_the_document(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window.load_image(donut_path)
     _add_square(window)
-    assert window.save_action.isEnabled()
+    assert window.export_svg_action.isEnabled()
     out_path = tmp_path / "out.svg"
 
-    _save_to(window, out_path, monkeypatch)
+    _export_to(window, out_path, monkeypatch)
 
     expected = svgwrite.build_svg(_drawing(window).shapes(), 100, 100, fill=window._overlay_color.name(), precision=2)
     assert out_path.read_text(encoding="utf-8") == expected
     assert expected.count("<path") == 1
 
 
-def test_save_svg_without_an_image(window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_export_svg_without_an_image(window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     svg_path = tmp_path / "shapes.svg"
     svg_path.write_text(
         (
@@ -176,24 +176,24 @@ def test_save_svg_without_an_image(window: MainWindow, tmp_path: Path, monkeypat
         )
     )
     window.import_svg(str(svg_path))
-    assert window.image is None and window.save_action.isEnabled()
+    assert window.image is None and window.export_svg_action.isEnabled()
     out_path = tmp_path / "out.svg"
 
-    _save_to(window, out_path, monkeypatch)
+    _export_to(window, out_path, monkeypatch)
 
     shapes = [shape for drawing in window._exported_drawings() for shape in drawing.shapes()]
     expected = svgwrite.build_svg(shapes, 71, 80, fill=window._overlay_color.name(), precision=2)
     assert out_path.read_text(encoding="utf-8") == expected  # sized to fit the shapes
 
 
-def test_save_svg_leaves_out_hidden_layers(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_export_svg_leaves_out_hidden_layers(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window.load_image(donut_path)
     _add_square(window)
-    window.document.layers[1].visible = False  # the only drawing: nothing left to save
-    assert not window.save_action.isEnabled()
+    window.document.layers[1].visible = False  # the only drawing: nothing left to export
+    assert not window.export_svg_action.isEnabled()
     out_path = tmp_path / "out.svg"
 
-    _save_to(window, out_path, monkeypatch)
+    _export_to(window, out_path, monkeypatch)
 
     assert not out_path.exists()
 

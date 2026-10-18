@@ -14,7 +14,7 @@ toggles on and off -- Tab, as in Blender too, goes into it and back out to
 object mode.
 
 The document is the source of truth: the canvas and the Layers panel show
-it, every change to it goes through its undo history, and Save exports
+it, every change to it goes through its undo history, and Export SVG writes
 what's in it. Cut, Copy and Paste work on the selection, in either mode,
 through a clipboard of the app's own (see clipboard.py). In edit mode,
 Select Connected (Ctrl+L) grows a selection of points or lines to
@@ -110,7 +110,8 @@ def _action_text(verb: str, title: str | None) -> str:
 
 class MainWindow(QMainWindow):
     # Widgets and actions, created by the _build_* helpers __init__ calls.
-    save_action: QAction
+    import_svg_action: QAction
+    export_svg_action: QAction
     undo_action: QAction
     redo_action: QAction
     cut_action: QAction
@@ -207,19 +208,19 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Open an image to get started.")
 
     def _build_actions_and_menus(self) -> None:
-        open_action = QAction(themed_icon("open"), "&Open Image...", self)
+        open_action = QAction(themed_icon("open_image"), "&Open Image...", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_image)
 
-        import_action = QAction("&Import SVG...", self)
-        import_action.setShortcut("Ctrl+I")
-        import_action.setToolTip("Import SVG: add an SVG file's shapes in a new layer")
-        import_action.triggered.connect(self._import_svg)
+        self.import_svg_action = QAction(themed_icon("import_svg"), "&Import SVG...", self)
+        self.import_svg_action.setShortcut("Ctrl+I")
+        self.import_svg_action.setToolTip("Import SVG: add an SVG file's shapes in a new layer")
+        self.import_svg_action.triggered.connect(self._import_svg)
 
-        self.save_action = QAction(themed_icon("save"), "&Save Vector as SVG...", self)
-        self.save_action.setShortcut(QKeySequence.StandardKey.Save)
-        self.save_action.setEnabled(False)
-        self.save_action.triggered.connect(self._save_svg)
+        self.export_svg_action = QAction(themed_icon("export_svg"), "&Export SVG...", self)
+        self.export_svg_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.export_svg_action.setEnabled(False)
+        self.export_svg_action.triggered.connect(self._export_svg)
 
         self.undo_action = QAction(themed_icon("undo"), "&Undo", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
@@ -418,8 +419,8 @@ class MainWindow(QMainWindow):
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(open_action)
-        file_menu.addAction(import_action)
-        file_menu.addAction(self.save_action)
+        file_menu.addAction(self.import_svg_action)
+        file_menu.addAction(self.export_svg_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
@@ -448,7 +449,8 @@ class MainWindow(QMainWindow):
 
         toolbar = self.addToolBar("Main")
         toolbar.addAction(open_action)
-        toolbar.addAction(self.save_action)
+        toolbar.addAction(self.import_svg_action)
+        toolbar.addAction(self.export_svg_action)
         toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
@@ -612,7 +614,7 @@ class MainWindow(QMainWindow):
         self.canvas.fit()
         self.canvas.setFocus()
         self.setWindowTitle(f"Vectorize Image — {path}")
-        self._update_save_enabled()
+        self._update_export_enabled()
         self._refresh_edge_source()
         self._update_status()
 
@@ -638,7 +640,7 @@ class MainWindow(QMainWindow):
         self.canvas.setFocus()
 
     def _exported_drawings(self) -> list[VectorDrawing]:
-        """Every vector drawing in a visible layer, bottom to top -- what's saved."""
+        """Every vector drawing in a visible layer, bottom to top -- what's exported."""
         return [
             item
             for layer in self.document.layers
@@ -650,11 +652,11 @@ class MainWindow(QMainWindow):
     def _export_shapes(self) -> list[Shape]:
         return [shape for drawing in self._exported_drawings() for shape in drawing.shapes()]
 
-    def _save_svg(self) -> None:
+    def _export_svg(self) -> None:
         shapes = self._export_shapes()
         if not shapes:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save Vector as SVG", "", "SVG files (*.svg)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export SVG", "", "SVG files (*.svg)")
         if not path:
             return
         width, height = self._page_size(shapes)
@@ -663,10 +665,10 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(svg)
         except OSError as exc:
-            QMessageBox.warning(self, "Could not save SVG", str(exc))
+            QMessageBox.warning(self, "Could not export SVG", str(exc))
 
     def _page_size(self, shapes: list[Shape]) -> tuple[float, float]:
-        """The saved SVG's width and height: the opened image's -- or, with
+        """The exported SVG's width and height: the opened image's -- or, with
         no image to vectorize, from the origin to just past every shape."""
         if self.image is not None:
             return self.image.size
@@ -838,7 +840,7 @@ class MainWindow(QMainWindow):
         self.redo_action.setEnabled(history.can_redo())
         self.undo_action.setText(_action_text("&Undo", history.undo_text()))
         self.redo_action.setText(_action_text("&Redo", history.redo_text()))
-        self._update_save_enabled()
+        self._update_export_enabled()
         self._update_selection_actions()
         self._update_status()
 
@@ -847,10 +849,10 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_layer_inserted(self, _index: int, layer: Layer) -> None:
-        layer.changed.connect(self._update_save_enabled)  # what's saved follows visibility
+        layer.changed.connect(self._update_export_enabled)  # what's exported follows visibility
 
     def _on_layer_removed(self, _index: int, layer: Layer) -> None:
-        disconnect(layer.changed, self._update_save_enabled)
+        disconnect(layer.changed, self._update_export_enabled)
 
     def _update_selection_actions(self) -> None:
         """Enable what can be done with the selection now. Cut, Copy and
@@ -911,8 +913,8 @@ class MainWindow(QMainWindow):
         if self._selecting():
             self.tool.flip_selection(axis)
 
-    def _update_save_enabled(self) -> None:
-        self.save_action.setEnabled(any(drawing.polygons for drawing in self._exported_drawings()))
+    def _update_export_enabled(self) -> None:
+        self.export_svg_action.setEnabled(any(drawing.polygons for drawing in self._exported_drawings()))
 
     def _update_status(self) -> None:
         if self.image is None and not self.document.layers:

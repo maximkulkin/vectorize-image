@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QEvent, QModelIndex, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QFocusEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QMenu, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QMenu, QMessageBox, QToolBar  # noqa: E402
 
 from conftest import click  # noqa: E402
 from vectorize_image.document import Document, Layer, VectorDrawing  # noqa: E402
@@ -446,6 +446,14 @@ def test_import_svg_adds_its_shapes_in_a_new_layer(window: MainWindow, diamond_p
     assert window.document.current_layer is image_layer
     window.redo_action.trigger()
     assert window.document.current_layer is imported
+
+
+def test_import_svg_is_on_the_toolbar_after_open(window: MainWindow) -> None:
+    toolbar = next(bar for bar in window.findChildren(QToolBar) if bar.windowTitle() == "Main")
+    actions = toolbar.actions()
+    index = actions.index(window.import_svg_action)
+    assert actions[index - 1].text() == "&Open Image..."
+    assert not window.import_svg_action.icon().isNull()
 
 
 def test_import_svg_into_an_empty_document(window: MainWindow, tmp_path: Path) -> None:

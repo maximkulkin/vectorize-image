@@ -60,7 +60,7 @@ def test_tracing_around_a_shape_and_closing_it_makes_a_polygon(window: MainWindo
     assert len(polygon.outer) == 4
     assert window.trace_tool.start is None  # closing the loop stops the chain
     assert "1 polygon(s), 0 open end(s)" in window.statusBar().currentMessage()
-    assert window.save_action.isEnabled()
+    assert window.export_svg_action.isEnabled()
 
 
 def test_curves_stay_close_to_the_actual_edge(window: MainWindow, diamond_path: str) -> None:
@@ -184,7 +184,7 @@ def test_saving_exports_what_was_drawn(window: MainWindow, diamond_path: str, tm
         return (str(out_path), "")
 
     monkeypatch.setattr("vectorize_image.gui.main_window.QFileDialog.getSaveFileName", fake_save_dialog)
-    window._save_svg()
+    window._export_svg()
 
     assert out_path.read_text(encoding="utf-8").count("<path") == 1
 

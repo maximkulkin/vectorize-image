@@ -201,7 +201,7 @@ Zoom is clamped to a sane range (0.05x–40x) either way. Keyboard shortcuts
 apply once the canvas has focus, which it grabs automatically after loading
 an image.
 
-Use **File → Save Vector as SVG** to export the polygons of every visible
+Use **File → Export SVG** to export the polygons of every visible
 layer.
 
 ## How it works
