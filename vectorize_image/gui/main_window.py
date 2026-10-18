@@ -8,8 +8,11 @@ vector drawing, in a new layer above the current one. Pen and Edit work
 on the current layer's drawing. The select tools -- Tweak (which also drags), Box and Paint --
 and Move work in either mode: object mode, where they select and move whole drawings and
 images of the current layer, or edit mode, where they select and move the current drawing's
-points, lines or polygons. G, as in Blender, grabs the selection in
-either mode: it moves with the cursor until a click places it. Edit Mode
+points, lines or polygons. Move's toolbar button brings it up with
+handles on the selection -- arrows to drag it along X or Y, and a disc in
+the middle to drag it freely -- selecting, off them, as Tweak does. G, as in Blender, grabs the selection in
+either mode instead: it moves with the cursor until a click places it --
+and switching to Move that way, it comes up without the handles. Edit Mode
 toggles on and off -- Tab, as in Blender too, goes into it and back out to
 object mode.
 
@@ -301,8 +304,9 @@ class MainWindow(QMainWindow):
         self.move_tool_action.setCheckable(True)
         self.move_tool_action.setToolTip(
             (
-                "Move (G): drag anywhere to move the selection, or drag something unselected to move it; "
-                "G also grabs the selection to move it with the cursor -- click to place it, "
+                "Move (G): drag the selection's arrows to move it along X or Y, or its middle to move it "
+                "freely; click to select, shift-click for more, or drag something to move it. G grabs the "
+                "selection instead, without the handles, to move it with the cursor -- click to place it, "
                 "X or Y to keep to one axis, Esc to cancel"
             )
         )
@@ -324,6 +328,8 @@ class MainWindow(QMainWindow):
         _when_checked(self.box_select_action, lambda: self._set_select_tool("box", self.box_select_action))
         _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint", self.paint_select_action))
         _when_checked(self.move_tool_action, lambda: self._set_select_tool("move"))
+        # Only the button (or menu) triggers it: G checks it, without handles.
+        self.move_tool_action.triggered.connect(lambda: self._set_move_handles(True))
         self.trace_tool_action.toggled.connect(self._update_tool)
 
         # The select tools share one toolbar button, showing the one in use,
@@ -602,9 +608,17 @@ class MainWindow(QMainWindow):
         self.edit_tool.set_select_tool(name)
         self._update_tool()
 
+    def _set_move_handles(self, shown: bool) -> None:
+        """Show Move's handles, or don't, in both modes (see MoveTool.set_handles)."""
+        self.object_tool.move_tool.set_handles(shown)
+        self.edit_tool.move_tool.set_handles(shown)
+
     def _grab(self) -> None:
-        """Switch to Move, and grab the selection with it from where the
-        cursor is (see MoveTool.start_grab)."""
+        """Switch to Move -- without its handles, unless it's on already
+        -- and grab the selection with it from where the cursor is (see
+        MoveTool.start_grab)."""
+        if not self.move_tool_action.isChecked():
+            self._set_move_handles(False)
         self.move_tool_action.setChecked(True)
         self.canvas.setFocus()  # for the keys a grab takes: X, Y and Esc
         self.tool.start_grab(self.canvas.cursor_scene_pos())

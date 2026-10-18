@@ -14,7 +14,7 @@ The scene holds two things, bottom to top:
 
 Tools drive it through a small interface -- the current drawing's editing
 decorations and move preview, previews of whole items moving, adding and
-removing their own overlay items, and on-screen geometry (distances in
+removing their own overlay items, the mouse cursor's shape, and on-screen geometry (distances in
 scene units, the view's size) -- rather than reaching into the scene
 themselves. `document_item`
 is an attribute for inspection (e.g. by tests), not for tools to modify.
@@ -184,6 +184,14 @@ class Canvas(QGraphicsView):
     def remove_overlay(self, item: QGraphicsItem) -> None:
         if item.scene() is self.scene():
             self.scene().removeItem(item)
+
+    def set_tool_cursor(self, shape: Qt.CursorShape | None) -> None:
+        """Show the mouse cursor as `shape` over the canvas, for what a
+        tool would do there -- or, for None, as it is by default."""
+        if shape is None:
+            self.viewport().unsetCursor()
+        else:
+            self.viewport().setCursor(shape)
 
     # ----------------------------------------------------------- geometry
 

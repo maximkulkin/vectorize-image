@@ -19,7 +19,7 @@ from vectorize_image.edit import points_to_move  # noqa: E402
 from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import CursorGuides  # noqa: E402
-from vectorize_image.gui.tools import MoveTool  # noqa: E402
+from vectorize_image.gui.tools import HANDLE_CURSORS, MoveTool  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (110.0, 40.0), (110.0, 110.0), (40.0, 110.0)]
@@ -320,11 +320,11 @@ def test_tweak_drags_a_whole_selection_and_a_click_narrows_it(window: MainWindow
     assert window.document.selection.items == {first}
 
 
-def test_move_drags_the_selection_from_anywhere(window: MainWindow, diamond_path: str) -> None:
+def test_move_from_g_drags_the_selection_from_anywhere(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
+    _grab(window, 75, 75)  # nothing selected: just Move, without its handles
     click(window, *CORNERS[0])
     corner = _point_at(drawing, CORNERS[0])
-    window.move_tool_action.trigger()  # the toolbar button: no grab, unlike G
     assert window.tool is window.edit_tool and window.edit_tool.select_tool is window.edit_tool.move_tool
     assert not _move_tool(window).grabbing
 
@@ -336,6 +336,107 @@ def test_move_drags_the_selection_from_anywhere(window: MainWindow, diamond_path
     drag(window, CORNERS[1], (CORNERS[1][0] + 5, CORNERS[1][1]))  # an unselected point: selected, then moved alone
     assert window.document.selection.items == {_point_at(drawing, (CORNERS[1][0] + 5, CORNERS[1][1]))}
     assert np.allclose(drawing.position(corner), (CORNERS[0][0] + 10, CORNERS[0][1] + 5), atol=TOLERANCE)
+
+
+def _handle_pos(window: MainWindow, offset_px: tuple[float, float]) -> tuple[float, float]:
+    """Where, in the scene, `offset_px` on screen from the middle of Move's handles is."""
+    middle, scale = _move_tool(window).handles.pos(), window.canvas.scene_distance(1.0)
+    return (middle.x() + offset_px[0] * scale, middle.y() + offset_px[1] * scale)
+
+
+def _select_square_with_move_handles(window: MainWindow, diamond_path: str) -> tuple[VectorDrawing, dict[Point, np.ndarray]]:
+    """The square, all selected, with Move on from its toolbar button; and where its points were."""
+    drawing, _ = _edit_square(window, diamond_path)
+    _key(window, Qt.Key.Key_3)
+    click(window, 75, 75)
+    window.move_tool_action.trigger()
+    return drawing, {point: drawing.position(point).copy() for point in drawing.points}
+
+
+def test_move_from_its_button_selects_as_tweak_does(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    first, second = _point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])
+    window.move_tool_action.trigger()  # the toolbar button: no grab, unlike G
+    assert window.edit_tool.select_tool is _move_tool(window) and not _move_tool(window).grabbing
+
+    click(window, *CORNERS[0])
+    assert window.document.selection.items == {first}
+    click(window, *CORNERS[1], shift=True)
+    assert window.document.selection.items == {first, second}
+    click(window, *CORNERS[1], shift=True)
+    assert window.document.selection.items == {first}
+
+    drag(window, (75, 100), (85, 105))  # off the handles, on nothing: deselects, moves nothing
+    assert not window.document.selection
+    assert np.allclose(drawing.position(first), CORNERS[0])
+
+    drag(window, CORNERS[1], (CORNERS[1][0] + 5, CORNERS[1][1]))  # something: selected, then moved
+    assert window.document.selection.items == {second}
+    assert np.allclose(drawing.position(second), (CORNERS[1][0] + 5, CORNERS[1][1]), atol=TOLERANCE)
+
+
+def test_move_from_its_button_shows_handles_on_the_selection(window: MainWindow, diamond_path: str) -> None:
+    _select_square_with_move_handles(window, diamond_path)
+    handles = _move_tool(window).handles
+    assert handles.isVisible() and handles.pos().x() == pytest.approx(75) and handles.pos().y() == pytest.approx(75)
+
+    viewport = window.canvas.viewport()
+    move(window, *_handle_pos(window, (40, 0)))
+    assert handles.highlight == "x" and viewport.cursor().shape() == Qt.CursorShape.SizeHorCursor
+    move(window, *_handle_pos(window, (0, -40)))
+    assert handles.highlight == "y" and viewport.cursor().shape() == Qt.CursorShape.SizeVerCursor
+    move(window, *_handle_pos(window, (0, 0)))
+    assert handles.highlight == "center" and viewport.cursor().shape() == Qt.CursorShape.SizeAllCursor
+    move(window, *_handle_pos(window, (-30, 30)))
+    assert handles.highlight is None and viewport.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+    move(window, *_handle_pos(window, (40, 0)))
+    key(window, Qt.Key.Key_Escape)  # nothing selected: nothing to show them on, or hover
+    assert not handles.isVisible()
+    assert handles.highlight is None and viewport.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
+@pytest.mark.parametrize(("offset_px", "moved"), [((40, 0), (10, 0)), ((0, -40), (0, 6)), ((0, 0), (10, 6))])
+def test_dragging_a_move_handle_moves_the_selection_along_its_axis(
+    window: MainWindow, diamond_path: str, offset_px: tuple[float, float], moved: tuple[float, float]
+) -> None:
+    drawing, before = _select_square_with_move_handles(window, diamond_path)
+    tool = _move_tool(window)
+    start = _handle_pos(window, offset_px)
+
+    move(window, *start)
+    press(window, *start)
+    move(window, start[0] + 10, start[1] + 6)
+    held = tool.handles.highlight  # what's dragged stays highlighted, the cursor showing how it moves
+    assert held is not None and window.canvas.viewport().cursor().shape() == HANDLE_CURSORS[held]
+    assert tool.handles.pos().x() == pytest.approx(75 + moved[0], abs=TOLERANCE)  # following the drag
+    assert tool.handles.pos().y() == pytest.approx(75 + moved[1], abs=TOLERANCE)
+    release(window, start[0] + 10, start[1] + 6)
+
+    for point, position in before.items():
+        assert np.allclose(drawing.position(point), position + moved, atol=TOLERANCE)
+    assert window.document.history.undo_text() == "Move Polygons"
+    window.undo_action.trigger()
+    assert all(np.allclose(drawing.position(point), position) for point, position in before.items())
+
+
+def test_g_switches_to_move_without_handles(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    _grab(window, 75, 75)
+    tool = _move_tool(window)
+    assert tool.grabbing and not tool.handles.isVisible()
+
+    click(window, 80, 75)  # placed: still no handles
+    assert not tool.grabbing and not tool.handles.isVisible()
+    assert _point_at(drawing, (45, 40))
+
+    window.move_tool_action.trigger()  # the button brings them up
+    assert tool.handles.isVisible()
+    _grab(window, 75, 75)  # G while on Move already keeps them -- hidden just while grabbing
+    assert tool.grabbing and not tool.handles.isVisible()
+    key(window, Qt.Key.Key_Escape)
+    assert tool.handles.isVisible()
 
 
 def test_g_grabs_the_selection_to_move_with_the_cursor_until_a_click(window: MainWindow, diamond_path: str) -> None:

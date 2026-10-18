@@ -1,7 +1,7 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
 curve and snap ring, the Edit tool's hover/drag highlights and the point Add Point would add, the box,
 guides and brush of the area select tools, object mode's hover highlight
-and boxes around images, and a grab's axis guide. Built from stock Qt graphics items so their
+and boxes around images, a grab's axis guide, and the Move tool's handles. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
 cosmetic pens, or ignores the view transform entirely, so it keeps a fixed
 on-screen size at any zoom.
@@ -14,7 +14,7 @@ from typing import override
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..document import Element, Line, Point, Polygon, VectorDrawing
-from ..typedefs import Axis, Bezier, PointLike
+from ..typedefs import Axis, Bezier, MoveHandle, PointLike
 from .document_items import LINE_WIDTH_PX, POINT_RADIUS_PX, bezier_path
 
 PREVIEW_COLOR = QColor(255, 214, 0)
@@ -39,6 +39,18 @@ AXIS_COLORS: dict[Axis, QColor] = {"x": QColor(255, 82, 82), "y": QColor(118, 25
 SNAP_HIGHLIGHT_RADIUS_PX = 9.0
 HANDLE_HIGHLIGHT_RADIUS_PX = 7.0
 AXIS_GUIDE_REACH_PX = 1e6  # each way: across the view, wherever it's panned
+
+# The Move tool's handles, on screen: a disc in the middle, and an arrow
+# out from it along each axis -- right for X, up for Y.
+MOVE_CENTER_RADIUS_PX = 7.0
+MOVE_ARROW_START_PX = 14.0  # from the middle, where an arrow's shaft starts
+MOVE_ARROW_TIP_PX = 64.0  # ... and where its head's tip is
+MOVE_ARROW_HEAD_PX = 14.0  # how long the head is
+MOVE_ARROW_HEAD_HALF_WIDTH_PX = 6.0
+MOVE_ARROW_WIDTH_PX = 2.5
+MOVE_HANDLE_REACH_PX = 4.0  # how far past a handle a press still takes it
+MOVE_CENTER_COLOR = QColor(255, 255, 255)
+MOVE_HANDLE_BACKING_COLOR = QColor(0, 0, 0, 140)  # around the handles, to show on light areas too
 
 
 def cosmetic_pen(color: QColor, width: float, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
@@ -283,3 +295,80 @@ class BrushOutline(QGraphicsEllipseItem):
         cx, cy = float(center[0]), float(center[1])
         self.setRect(QRectF(cx - radius, cy - radius, 2 * radius, 2 * radius))
         self.show()
+
+
+class MoveHandles(QGraphicsItem):
+    """The Move tool's handles, around the middle of the selection: a disc
+    to drag it freely, and arrows -- red along X, green along Y -- to drag
+    it along just that axis. Drawn in screen space, a fixed size at any
+    zoom; the one under the cursor, or being dragged, highlighted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+        self._highlight: MoveHandle | None = None
+        self.hide()
+
+    @property
+    def highlight(self) -> MoveHandle | None:
+        return self._highlight
+
+    def show_at(self, pos: PointLike) -> None:
+        self.setPos(_point(pos))
+        self.show()
+
+    def set_highlight(self, handle: MoveHandle | None) -> None:
+        if handle != self._highlight:
+            self._highlight = handle
+            self.update()
+
+    @staticmethod
+    def handle_at(offset_px: tuple[float, float]) -> MoveHandle | None:
+        """The handle at `offset_px` from the middle, on screen -- if any."""
+        x, y = offset_px
+        reach = MOVE_HANDLE_REACH_PX
+        if x * x + y * y <= (MOVE_CENTER_RADIUS_PX + reach) ** 2:
+            return "center"
+        across = MOVE_ARROW_HEAD_HALF_WIDTH_PX + reach
+        if abs(y) <= across and MOVE_ARROW_START_PX - reach <= x <= MOVE_ARROW_TIP_PX + reach:
+            return "x"
+        if abs(x) <= across and MOVE_ARROW_START_PX - reach <= -y <= MOVE_ARROW_TIP_PX + reach:
+            return "y"
+        return None
+
+    @override
+    def boundingRect(self) -> QRectF:
+        margin = MOVE_ARROW_HEAD_HALF_WIDTH_PX + 2.0
+        reach = MOVE_ARROW_TIP_PX + 2.0
+        return QRectF(-margin, -reach, reach + margin, reach + margin)
+
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        painter.save()
+        arrows: tuple[tuple[Axis, QPointF], ...] = (("x", QPointF(1.0, 0.0)), ("y", QPointF(0.0, -1.0)))
+        for axis, direction in arrows:
+            self._paint_arrow(painter, direction, self._color(axis, AXIS_COLORS[axis]))
+        # Plain pens, not cosmetic: with the view transform ignored, they're already in screen pixels.
+        painter.setPen(QPen(MOVE_HANDLE_BACKING_COLOR, 1.5))
+        painter.setBrush(self._color("center", MOVE_CENTER_COLOR))
+        painter.drawEllipse(QPointF(0.0, 0.0), MOVE_CENTER_RADIUS_PX, MOVE_CENTER_RADIUS_PX)
+        painter.restore()
+
+    def _color(self, handle: MoveHandle, color: QColor) -> QColor:
+        return ACTIVE_COLOR if handle == self._highlight else color
+
+    def _paint_arrow(self, painter: QPainter, direction: QPointF, color: QColor) -> None:
+        """An arrow from the middle along `direction`, a unit vector."""
+        across = QPointF(-direction.y(), direction.x())
+        start = direction * MOVE_ARROW_START_PX
+        tip = direction * MOVE_ARROW_TIP_PX
+        base = direction * (MOVE_ARROW_TIP_PX - MOVE_ARROW_HEAD_PX)
+        half = across * MOVE_ARROW_HEAD_HALF_WIDTH_PX
+        head = QPolygonF([tip, base + half, base - half])
+        backing = QPen(MOVE_HANDLE_BACKING_COLOR, MOVE_ARROW_WIDTH_PX + 2.0)
+        backing.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        for pen, brush in ((backing, MOVE_HANDLE_BACKING_COLOR), (QPen(color, MOVE_ARROW_WIDTH_PX), color)):
+            painter.setPen(pen)
+            painter.drawLine(start, base)
+            painter.setBrush(brush)
+            painter.drawPolygon(head)

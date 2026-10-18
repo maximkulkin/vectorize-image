@@ -301,9 +301,9 @@ def test_moving_drags_the_selection_as_one_undo_step(window: MainWindow, diamond
     _, drawing = _open_with_square(window, diamond_path)
     other = _add_square(window, 100)
     before, other_before = _positions(drawing), _positions(other)
+    _grab(window, 130, 20)  # nothing selected: just Move, without its handles
     click(window, 55, 55)
     click(window, 115, 115, shift=True)
-    window.move_tool_action.trigger()  # the toolbar button: no grab, unlike G
     assert window.tool is window.object_tool and window.object_tool.select_tool is window.object_tool.move_tool
 
     drag(window, (-10, 75), (10, 85))  # anywhere, even off everything: moves the whole selection
@@ -317,6 +317,28 @@ def test_moving_drags_the_selection_as_one_undo_step(window: MainWindow, diamond
     window.undo_action.trigger()
     assert np.allclose(_positions(drawing), before)
     assert np.allclose(_positions(other), other_before)
+
+
+def test_move_from_its_button_selects_and_deselects_objects(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    other = _add_square(window, 100)
+    before = _positions(drawing)
+    window.move_tool_action.trigger()  # the toolbar button: no grab, unlike G
+    assert window.object_tool.select_tool is window.object_tool.move_tool
+    assert not window.object_tool.move_tool.handles.isVisible()  # nothing selected
+
+    click(window, 55, 55)
+    assert window.document.selection.items == {drawing}
+    assert window.object_tool.move_tool.handles.isVisible()
+    click(window, 115, 115, shift=True)
+    assert window.document.selection.items == {drawing, other}
+    click(window, 115, 115)  # a click on part of it: just that part
+    assert window.document.selection.items == {other}
+
+    click(window, 140, 40)  # off the handles, on nothing: deselects
+    assert not window.document.selection
+    assert not window.object_tool.move_tool.handles.isVisible()
+    assert np.allclose(_positions(drawing), before)
 
 
 def _grab(window: MainWindow, x: float, y: float) -> None:

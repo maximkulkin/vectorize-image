@@ -22,3 +22,6 @@ type ElementMode = Literal["points", "lines", "polygons"]
 type SelectionMode = Literal["objects"] | ElementMode
 # The one axis a move can be kept to.
 type Axis = Literal["x", "y"]
+# One of the Move tool's handles: the middle, which moves freely, or an
+# axis's arrow, which keeps the move to that axis.
+type MoveHandle = Literal["center"] | Axis

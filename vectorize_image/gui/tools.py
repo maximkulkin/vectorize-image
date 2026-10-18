@@ -75,7 +75,7 @@ from ..edit import (
     split_line,
 )
 from ..signals import Signal, disconnect
-from ..typedefs import Axis, Bezier, PointLike
+from ..typedefs import Axis, Bezier, MoveHandle, PointLike
 from .canvas import Canvas
 from .document_items import GRAB_COLOR, POINT_RADIUS_PX
 from .overlays import (
@@ -91,6 +91,7 @@ from .overlays import (
     HitHighlight,
     ItemBoxes,
     MarkerRing,
+    MoveHandles,
     PointPreview,
 )
 
@@ -195,6 +196,11 @@ def _shifted(bounds: tuple[np.ndarray, np.ndarray], offset: tuple[float, float])
 
 
 AXIS_KEYS: Final[dict[Qt.Key, Axis]] = {Qt.Key.Key_X: "x", Qt.Key.Key_Y: "y"}
+HANDLE_CURSORS: Final[dict[MoveHandle, Qt.CursorShape]] = {
+    "center": Qt.CursorShape.SizeAllCursor,
+    "x": Qt.CursorShape.SizeHorCursor,
+    "y": Qt.CursorShape.SizeVerCursor,
+}
 _FLIP_TEXT: Final[dict[Axis, str]] = {"x": "Horizontally", "y": "Vertically"}
 
 
@@ -221,6 +227,11 @@ def _middle(positions: Iterable[PointLike]) -> tuple[float, float]:
     array = np.array([np.asarray(position, dtype=float) for position in positions])
     x, y = (array.min(axis=0) + array.max(axis=0)) / 2
     return (float(x), float(y))
+
+
+def _tweak_hint(selection: Selection) -> str:
+    """The status bar's tip on selecting as Tweak does, with nothing selected."""
+    return f"click {_one(selection)} to select it (shift-click for more), or drag it to move it"
 
 
 def _grab_hint(selection: Selection, axis: Axis | None) -> str:
@@ -690,11 +701,14 @@ class ItemTarget(MoveTarget[Item]):
 class MoveTool[T: Selectable](SelectTool):
     """Drag anywhere to move the selection -- after selecting what's under
     the cursor, if it isn't already (see _grab) -- or drag something the
-    target drags on its own (an edit-mode control point). Or grab the
-    selection (see start_grab). Either way the move is previewed on the
-    canvas, without changing anything, and committed as one command. What
-    there is to hit, highlight and move is the mode's: the target's.
-    TweakTool selects on press differently."""
+    target drags on its own (an edit-mode control point). With its
+    handles shown (see set_handles), drag one of them to move the
+    selection -- along an axis, by its arrow -- whatever's under it; and
+    off them, press as Tweak does instead, to select and deselect. Or
+    grab the selection (see start_grab). Either way the move is previewed
+    on the canvas, without changing anything, and committed as one
+    command. What there is to hit, highlight and move is the mode's: the
+    target's. TweakTool selects on press differently."""
 
     name: ClassVar[str] = "move"
 
@@ -709,6 +723,10 @@ class MoveTool[T: Selectable](SelectTool):
         self._axis: Axis | None = None  # the one axis a grab is kept to, if it is
         self._guide_through: tuple[float, float] | None = None  # the middle of what it moves, once needed
         self._axis_guide: AxisGuide = AxisGuide()
+        self._handles_shown: bool = False  # see set_handles
+        self._handles: MoveHandles = MoveHandles()
+        self._handles_middle: tuple[float, float] | None = None  # where they are, but for a drag of the selection
+        self._dragging_selection: bool = False  # whether a drag in progress moves the selection, handles and all
         # What hover and drag state refer to: the selection's layer and drawing.
         self._context: tuple[Layer | None, VectorDrawing | None] = (None, None)
         self._pressed: tuple[T | None, bool] = (None, False)  # (what, with shift) the last press was on
@@ -734,11 +752,52 @@ class MoveTool[T: Selectable](SelectTool):
 
     @property
     def axis_guide(self) -> AxisGuide:
-        """The line a grab kept to an axis shows -- for inspection (e.g. by tests)."""
+        """The line a move kept to an axis shows -- for inspection (e.g. by tests)."""
         return self._axis_guide
 
+    @property
+    def handles(self) -> MoveHandles:
+        """The handles -- for inspection (e.g. by tests)."""
+        return self._handles
+
+    def set_handles(self, shown: bool) -> None:
+        """Show handles on the middle of the selection, or don't: a disc
+        to drag it freely, and an arrow for each axis to drag it along just
+        that one -- whatever's under them. Hidden while grabbing."""
+        self._handles_shown = shown
+        self._place_handles()
+        self.status_changed.emit()
+
+    def _place_handles(self) -> None:
+        """Put the handles on the middle of what moving the selection
+        moves -- following a drag of it -- if they're shown and there's
+        anything to move."""
+        if not self._handles_shown or self._grabbing:
+            self._hide_handles()
+            return
+        if self._moving is None:
+            moving = self.target.selection_moving()
+            self._handles_middle = moving.middle() if moving is not None else None
+        middle = self._handles_middle
+        if middle is None:
+            self._hide_handles()
+            return
+        dx, dy = self._delta if self._dragging_selection else (0.0, 0.0)
+        self._handles.show_at((middle[0] + dx, middle[1] + dy))
+
+    def _hide_handles(self) -> None:
+        self._handles.hide()
+        self._set_hover_handle(None)  # nothing there to hover any more
+
+    def _handle_at(self, pos: tuple[float, float]) -> MoveHandle | None:
+        """The handle under `pos`, if they're showing."""
+        if not self._handles.isVisible():
+            return None
+        middle, scale = self._handles.pos(), self.canvas.scene_distance(1.0)
+        return MoveHandles.handle_at(((pos[0] - middle.x()) / scale, (pos[1] - middle.y()) / scale))
+
     def _overlay_items(self) -> tuple[QGraphicsItem, ...]:
-        return (*self.target.overlays(), self._axis_guide)
+        return (*self.target.overlays(), self._axis_guide, self._handles)
 
     def _current_context(self) -> tuple[Layer | None, VectorDrawing | None]:
         return (self.selection.layer, self.selection.drawing)
@@ -747,6 +806,7 @@ class MoveTool[T: Selectable](SelectTool):
     def activate(self) -> None:
         super().activate()
         self._context = self._current_context()
+        self._place_handles()
         self._add_overlays(self._overlay_items())
         self.document.history.changed.connect(self._on_document_changed)
         self.selection.changed.connect(self._on_selection_changed)
@@ -775,6 +835,8 @@ class MoveTool[T: Selectable](SelectTool):
         if layer is not self._context[0] or drawing is not self._context[1]:
             self._abort()  # another current layer, or drawing: what was hit or moving isn't there
             self._context = (layer, drawing)
+        if self._moving is None:
+            self._place_handles()
 
     def _set_hover(self, target: T | None) -> None:
         self.hover_target = target
@@ -784,8 +846,11 @@ class MoveTool[T: Selectable](SelectTool):
         self.active_target = target
         self.target.show_active(target, self._delta)
 
-    def _start_drag(self, pos: tuple[float, float], moving: Moving, target: T | None) -> None:
+    def _start_drag(self, pos: tuple[float, float], moving: Moving, target: T | None, selection: bool = True) -> None:
+        """Start dragging `moving` from `pos`, pressed on `target` -- the
+        selection, or (not `selection`) something moved on its own."""
         self._moving = moving
+        self._dragging_selection = selection
         self._origin = self._pos = pos
         self._delta = (0.0, 0.0)
         self._set_hover(None)
@@ -800,6 +865,7 @@ class MoveTool[T: Selectable](SelectTool):
         self._delta = _constrained((pos[0] - self._origin[0], pos[1] - self._origin[1]), self._axis)
         moving.preview(self._delta, self._grabbing)
         self._set_active(self.active_target)
+        self._place_handles()
         if self._axis is None:
             self._axis_guide.hide()
             return
@@ -812,12 +878,15 @@ class MoveTool[T: Selectable](SelectTool):
         if moving is not None:
             moving.end_preview()
         self._moving = None
+        self._dragging_selection = False
         self._delta = (0.0, 0.0)
         self._grabbing = False
         self._axis = None
         self._guide_through = None
         self._axis_guide.hide()
         self._set_active(None)
+        self._set_hover_handle(None)
+        self._place_handles()
         if grabbing:
             self.status_changed.emit()
 
@@ -832,12 +901,17 @@ class MoveTool[T: Selectable](SelectTool):
         return True
 
     def _select_on_press(self, hit: T | None, shift: bool) -> bool:
-        """Select what pressing on `hit` does; return whether to drag the selection."""
+        """Select what pressing on `hit` does; return whether to drag the
+        selection. With the handles, as Tweak does: they move it from
+        anywhere instead."""
+        if self._handles_shown:
+            return _tweak(self.selection, hit, shift)
         return _grab(self.selection, hit, shift)
 
     def _on_click(self, hit: T | None, shift: bool) -> None:
-        """A press on `hit` released without dragging."""
-        del hit, shift  # nothing more to do by default
+        """A press on `hit` released without dragging -- with the handles, as Tweak's."""
+        if self._handles_shown:
+            _tweak_click(self.selection, hit, shift)
 
     @override
     def start_grab(self, scene_pos: QPointF) -> None:
@@ -857,13 +931,23 @@ class MoveTool[T: Selectable](SelectTool):
         self._drag_to(pos)
         self.status_changed.emit()
 
+    def _set_hover_handle(self, handle: MoveHandle | None) -> None:
+        """Highlight `handle` as under the cursor, or being dragged -- and
+        show what dragging it does with the cursor's shape."""
+        if handle != self._handles.highlight:
+            self._handles.set_highlight(handle)
+            self.canvas.set_tool_cursor(None if handle is None else HANDLE_CURSORS[handle])
+            self.status_changed.emit()
+
     @override
     def on_move(self, scene_pos: QPointF) -> None:
         pos = _xy(scene_pos)
         if self.dragging:
             self._drag_to(pos)
-        else:
-            self._set_hover(self.target.hit(pos))
+            return
+        handle = self._handle_at(pos)
+        self._set_hover_handle(handle)
+        self._set_hover(None if handle is not None else self.target.hit(pos))
 
     @override
     def on_press(self, scene_pos: QPointF, shift: bool) -> None:
@@ -872,11 +956,19 @@ class MoveTool[T: Selectable](SelectTool):
             self._drag_to(pos)
             self._commit()
             return
+        handle = self._handle_at(pos)
+        moving = self.target.selection_moving() if handle is not None else None
+        if handle is not None and moving is not None:
+            self._pressed = (None, shift)
+            self._start_drag(pos, moving, None)
+            self._axis = None if handle == "center" else handle
+            self._set_hover_handle(handle)
+            return
         hit = self.target.hit(pos)
         alone = self.target.moving_alone(hit, shift)
         if alone is not None:
             self._pressed = (None, shift)
-            self._start_drag(pos, alone, hit)
+            self._start_drag(pos, alone, hit, selection=False)
             return
         self._pressed = (hit, shift)
         moving = self.target.selection_moving() if self._select_on_press(hit, shift) else None
@@ -913,6 +1005,20 @@ class MoveTool[T: Selectable](SelectTool):
     def status_hint(self) -> str:
         if self._grabbing:
             return _grab_hint(self.selection, self._axis)
+        match self._handles.highlight:
+            case "center":
+                return f"drag to move {_describe(self.selection)}"
+            case "x" | "y" as axis:
+                return f"drag to move {_describe(self.selection)} along {axis.upper()}"
+            case None:
+                pass
+        if self._handles_shown:
+            if self.selection:
+                return (
+                    f"{_describe(self.selection)} selected · drag an arrow to move along X or Y, "
+                    f"click to select, {self.target.selected_hint}"
+                )
+            return _tweak_hint(self.selection)
         if self.selection:
             return f"{_describe(self.selection)} selected · drag anywhere to move, {self.target.selected_hint}"
         return f"drag {_one(self.selection)} to select and move it"
@@ -939,7 +1045,7 @@ class TweakTool[T: Selectable](MoveTool[T]):
             return _grab_hint(self.selection, self._axis)
         if self.selection:
             return f"{_describe(self.selection)} selected · drag one to move them, {self.target.selected_hint}"
-        return f"click {_one(self.selection)} to select it (shift-click for more), or drag it to move it"
+        return _tweak_hint(self.selection)
 
 
 class BoxSelectTool(SelectTool):
