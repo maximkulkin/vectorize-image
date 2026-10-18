@@ -20,6 +20,8 @@ from vectorize_image.gui.canvas import OVERLAY_Z, Canvas  # noqa: E402
 from vectorize_image.gui.document_items import (  # noqa: E402
     DocumentItem,
     LayerItem,
+    LINE_COLOR,
+    SELECTION_COLOR,
     ModelItem,
     RasterImageItem,
     VectorDrawingItem,
@@ -419,3 +421,46 @@ def test_the_selection_is_highlighted(canvas: Canvas) -> None:
     canvas.document.selection.set_items(drawing.lines)
 
     assert _render(canvas, 50, 50).pixelColor(25, 10) != blank
+
+
+def test_object_mode_shows_every_drawings_lines(canvas: Canvas) -> None:
+    drawing = VectorDrawing()
+    a, b = drawing.add_point((5, 25)), drawing.add_point((45, 25))
+    drawing.add_line(a, b)  # an open line: no fill, only its stroke shows
+    canvas.document.layers.append(Layer("a", [drawing]))
+    canvas.set_vector_style(VectorStyle(show_lines=False, show_points=False))
+
+    assert _render(canvas, 50, 50).pixelColor(25, 25) == QColor(255, 255, 255)
+    canvas.set_object_mode(True)
+    assert _render(canvas, 50, 50).pixelColor(25, 25) == LINE_COLOR
+    canvas.set_object_mode(False)
+    assert _render(canvas, 50, 50).pixelColor(25, 25) == QColor(255, 255, 255)
+
+
+def test_a_selected_object_is_brighter_with_lines_in_the_selections_color(canvas: Canvas) -> None:
+    drawing = _square_drawing()
+    canvas.document.layers.append(layer := Layer("a", [drawing]))
+    canvas.document.current_layer = layer
+    canvas.set_vector_style(VectorStyle(show_lines=False, show_points=False))
+    canvas.set_object_mode(True)
+    before = _render(canvas, 50, 50)
+    assert before.pixelColor(25, 10) == LINE_COLOR
+
+    canvas.document.selection.set_items({drawing})
+
+    after = _render(canvas, 50, 50)
+    assert after.pixelColor(25, 10) == SELECTION_COLOR
+    assert after.pixelColor(25, 25).lightness() > before.pixelColor(25, 25).lightness()
+
+
+def test_a_grabbed_drawing_is_shown_as_such(canvas: Canvas) -> None:
+    drawing = _square_drawing()
+    canvas.document.layers.append(Layer("a", [drawing]))
+    item = canvas.document_item.item_for(drawing)
+    assert item is not None
+
+    canvas.preview_offset([drawing], (5, 0), grabbed=True)
+    assert item.grabbed and item.pos().x() == 5
+
+    canvas.end_offset_preview([drawing])
+    assert not item.grabbed and item.pos().x() == 0

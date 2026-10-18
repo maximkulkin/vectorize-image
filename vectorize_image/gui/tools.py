@@ -559,8 +559,7 @@ class ItemsMoving(Moving):
 
     @override
     def preview(self, delta: tuple[float, float], grabbed: bool) -> None:
-        del grabbed  # object mode's boxes around the selection show a grab (see ObjectTool)
-        self.canvas.preview_offset(self.items, delta)
+        self.canvas.preview_offset(self.items, delta, grabbed)
 
     @override
     def end_preview(self) -> None:
@@ -1443,9 +1442,11 @@ class EditTool(SelectingTool[Element]):
 class ObjectTool(SelectingTool[Item]):
     """Object mode -- the selection in "objects" mode: select whole items
     -- drawings and images -- of the current layer with one of the select
-    sub-tools, and move them (with Tweak or Move). A box around each
-    selected item shows what's selected, following a move being dragged --
-    in GRAB_COLOR while it's a grab."""
+    sub-tools, and move them (with Tweak or Move). Every drawing shows
+    its lines, and a selected one its fill brighter and its lines in the
+    selection's color (see VectorView); a box around each selected image
+    shows it's selected, following a move being dragged. Either way, in
+    GRAB_COLOR while it's a grab."""
 
     name: ClassVar[str] = "object"
     hint: ClassVar[str] = OBJECT_HINT
@@ -1456,11 +1457,12 @@ class ObjectTool(SelectingTool[Item]):
 
     @property
     def selected_boxes(self) -> ItemBoxes:
-        """The boxes around what's selected -- for inspection (e.g. by tests)."""
+        """The boxes around the selected images -- for inspection (e.g. by tests)."""
         return self._selected_boxes
 
     @override
     def activate(self) -> None:
+        self.canvas.set_object_mode(True)
         super().activate()
         self._add_overlays((self._selected_boxes,))
         self.document.selection.changed.connect(self._show_selection)
@@ -1473,6 +1475,7 @@ class ObjectTool(SelectingTool[Item]):
         disconnect(self.document.history.changed, self._show_selection)
         super().deactivate()
         self._remove_overlays((self._selected_boxes,))
+        self.canvas.set_object_mode(False)
 
     def _flippable(self) -> list[Item]:
         """The selected items, less any empty drawings: there's nothing of them to flip."""
@@ -1497,7 +1500,8 @@ class ObjectTool(SelectingTool[Item]):
         tool = self.select_tool
         moving = isinstance(tool, MoveTool)  # Tweak's too: it's a Move
         offset = tool.delta if moving else (0.0, 0.0)
-        boxes = [_shifted(item_bounds(item), offset) for item in self.document.selection.objects]
+        images = (item for item in self.document.selection.objects if not isinstance(item, VectorDrawing))
+        boxes = [_shifted(item_bounds(item), offset) for item in images]
         self._selected_boxes.set_color(GRAB_COLOR if moving and tool.grabbing else ACTIVE_COLOR)
         self._selected_boxes.show_boxes(boxes, self.canvas.scene_distance(ITEM_BOX_PAD_PX))
 

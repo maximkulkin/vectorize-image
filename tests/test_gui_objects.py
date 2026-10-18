@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QApplication, QToolBar  # noqa: E402
 from conftest import click, drag, key, move, press, release  # noqa: E402
 from vectorize_image.document import Layer, RasterImage, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
-from vectorize_image.gui.document_items import GRAB_COLOR, RasterImageItem  # noqa: E402
+from vectorize_image.gui.document_items import GRAB_COLOR, RasterImageItem, VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import ACTIVE_COLOR  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
@@ -334,14 +334,14 @@ def test_g_grabs_the_selected_objects_until_a_click(window: MainWindow, diamond_
     other = _add_square(window, 100)
     before, other_before = _positions(drawing), _positions(other)
     view = window.canvas.document_item.view_of(drawing)
-    assert view is not None
+    assert isinstance(view, VectorDrawingItem)
     click(window, 55, 55)
     click(window, 115, 115, shift=True)
 
     _grab(window, 90, 90)
     tool = window.object_tool.move_tool
     assert window.object_tool.select_tool is tool and tool.grabbing
-    assert window.object_tool.selected_boxes.pen().color() == GRAB_COLOR
+    assert view.grabbed
 
     move(window, 100, 95)  # no button held: previewed moving with the cursor
     assert np.allclose(_positions(drawing), before)
@@ -353,7 +353,7 @@ def test_g_grabs_the_selected_objects_until_a_click(window: MainWindow, diamond_
     assert tool.axis_guide.axis == "y" and tool.axis_guide.pos().x() == pytest.approx(85)
 
     click(window, 100, 100)
-    assert not tool.grabbing and window.object_tool.selected_boxes.pen().color() == ACTIVE_COLOR
+    assert not tool.grabbing and not view.grabbed
     assert tool.axis_guide.axis is None
     assert np.allclose(_positions(drawing) - before, (0, 10), atol=TOLERANCE)
     assert np.allclose(_positions(other) - other_before, _positions(drawing) - before)
@@ -364,7 +364,7 @@ def test_escape_cancels_a_grab_of_objects(window: MainWindow, diamond_path: str)
     _, drawing = _open_with_square(window, diamond_path)
     before = _positions(drawing)
     view = window.canvas.document_item.view_of(drawing)
-    assert view is not None
+    assert isinstance(view, VectorDrawingItem)
     click(window, 55, 55)
     _grab(window, 90, 90)
     move(window, 110, 100)
@@ -374,10 +374,31 @@ def test_escape_cancels_a_grab_of_objects(window: MainWindow, diamond_path: str)
     tool = window.object_tool.move_tool
     assert not tool.grabbing
     assert (view.pos().x(), view.pos().y()) == (0.0, 0.0)
-    assert window.object_tool.selected_boxes.pen().color() == ACTIVE_COLOR
+    assert not view.grabbed
     assert np.allclose(_positions(drawing), before)
     assert not window.document.history.can_undo()
     assert window.document.selection.items == {drawing}
+
+
+def test_selected_drawings_show_it_themselves_and_images_by_a_box(window: MainWindow, diamond_path: str) -> None:
+    image, drawing = _open_with_square(window, diamond_path)
+    view = window.canvas.document_item.view_of(drawing)
+    assert isinstance(view, VectorDrawingItem) and view.view.object_mode
+    boxes = window.object_tool.selected_boxes
+
+    click(window, 55, 55)
+    assert view.selected_as_object and not boxes.isVisible()
+
+    window.document.current_layer = _layer(window, "Image")
+    window.document.selection.set_items({image})
+    assert not view.selected_as_object and boxes.isVisible()
+    _grab(window, 90, 90)
+    assert boxes.pen().color() == GRAB_COLOR
+    key(window, Qt.Key.Key_Escape)
+    assert boxes.pen().color() == ACTIVE_COLOR
+
+    _shortcut(window, Qt.Key.Key_Tab)  # edit mode: no object mode decorations
+    assert not view.view.object_mode
 
 
 def test_a_drag_is_previewed_without_moving_anything(window: MainWindow, diamond_path: str) -> None:

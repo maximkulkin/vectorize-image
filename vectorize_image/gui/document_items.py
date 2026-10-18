@@ -13,9 +13,10 @@ removing and reordering children, or repainting itself -- and nothing has
 to tell it to refresh. When the model drops something, its item is
 detached from the model's signals and deleted.
 
-How vector drawings are shown beyond what's in them -- the style, and the
-editing decorations of the current drawing -- is a VectorView, handed
-down the tree to every VectorDrawingItem.
+How vector drawings are shown beyond what's in them -- the style, the
+editing decorations of the current drawing, and object mode's of every
+drawing -- is a VectorView, handed down the tree to every
+VectorDrawingItem.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ LINE_WIDTH_PX = 2.2
 POINT_RADIUS_PX = 4.0
 CONTROL_RADIUS_PX = 3.0
 SELECTION_MARKER_PAD_PX = 3.0
+SELECTED_FILL_LIGHTER = 140  # how much brighter (QColor.lighter's percent) a selected object's fill is
 
 
 @dataclass(frozen=True)
@@ -72,12 +74,18 @@ class VectorView:
     shown whatever the style says (so a drawing tool's work is visible
     before it's filled); and with `show_controls`, the control points of
     what's selected and their handles (see edit.controls_shown).
+
+    With `object_mode`, every drawing shows its lines, whatever the style
+    says, and those selected as whole objects stand out: their fill
+    brighter and their lines in SELECTION_COLOR -- in GRAB_COLOR while
+    a grab moves them.
     """
 
     style: VectorStyle = field(default_factory=VectorStyle)
     selection: Selection | None = None
     outline_current: bool = False
     show_controls: bool = False
+    object_mode: bool = False
 
 
 class ModelItem(QGraphicsItem):
@@ -86,9 +94,10 @@ class ModelItem(QGraphicsItem):
     def detach(self) -> None:
         """Stop following the model, before being thrown away."""
 
-    def preview_offset(self, delta: PointLike) -> None:
+    def preview_offset(self, delta: PointLike, grabbed: bool = False) -> None:
         """Show it moved by `delta` -- not moving it in the model -- or, by
-        (0, 0), where it is again."""
+        (0, 0), where it is again; with `grabbed`, as a grab's move."""
+        del grabbed  # shown no differently by default
         dx, dy = np.asarray(delta, dtype=float)
         placement = self._placement()
         self.setPos(placement.x() + float(dx), placement.y() + float(dy))
@@ -298,7 +307,8 @@ class VectorDrawingItem(ModelItem):
     moving points drawn displaced, each by its own offset, and everything
     made from them with them -- without touching the drawing until the
     move is committed. A grab's preview also shows the selection, which
-    is what it moves, highlighted in GRAB_COLOR rather than the usual.
+    is what it moves, highlighted in GRAB_COLOR rather than the usual --
+    and so does a grab of the whole drawing, in object mode.
 
     Line widths and point sizes stay fixed on screen at any zoom, so they
     poke out of the drawing's bounds by a few pixels; the Canvas repaints
@@ -370,6 +380,19 @@ class VectorDrawingItem(ModelItem):
         if self._offsets or self._grabbed:
             self.set_move_preview({})
 
+    @override
+    def preview_offset(self, delta: PointLike, grabbed: bool = False) -> None:
+        super().preview_offset(delta)
+        if grabbed != self._grabbed:
+            self._grabbed = grabbed
+            self.update()
+
+    @property
+    def selected_as_object(self) -> bool:
+        """Whether it's selected as a whole object, in object mode."""
+        selection = self._view.selection
+        return self._view.object_mode and selection is not None and self.drawing in selection.objects
+
     def _on_changed(self, _elements: frozenset[object]) -> None:
         self.prepareGeometryChange()
         self._bounds = self._compute_bounds()
@@ -414,9 +437,12 @@ class VectorDrawingItem(ModelItem):
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         drawing, view = self.drawing, self._view
         current = self.is_current
+        selected = self.selected_as_object
         scale = painter.worldTransform().m11() or 1.0
 
         fill = QColor(view.style.fill_color)
+        if selected:
+            fill = fill.lighter(SELECTED_FILL_LIGHTER)
         fill.setAlphaF(view.style.fill_opacity)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
@@ -428,8 +454,9 @@ class VectorDrawingItem(ModelItem):
             painter.drawPath(path)
 
         outlined = current and view.outline_current
-        if view.style.show_lines or outlined:
-            painter.setPen(_cosmetic_pen(LINE_COLOR, LINE_WIDTH_PX))
+        if view.style.show_lines or outlined or view.object_mode:
+            line_color = (GRAB_COLOR if self._grabbed else SELECTION_COLOR) if selected else LINE_COLOR
+            painter.setPen(_cosmetic_pen(line_color, LINE_WIDTH_PX))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(self._lines_path(drawing.lines))
 
@@ -478,7 +505,7 @@ class VectorDrawingItem(ModelItem):
 
     def _paint_selection(self, painter: QPainter, scale: float) -> None:
         selection = self._view.selection
-        if not selection or selection.mode == "objects":  # whole items: shown by object mode's own boxes
+        if not selection or selection.mode == "objects":  # whole drawings: shown by their lines (see paint)
             return
         items = selection.elements
         color = GRAB_COLOR if self._grabbed else SELECTION_COLOR

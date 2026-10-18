@@ -143,6 +143,11 @@ class Canvas(QGraphicsView):
             replace(self.document_item.view, outline_current=outline, show_controls=controls)
         )
 
+    def set_object_mode(self, on: bool) -> None:
+        """Decorate every drawing for object mode: its lines shown, and
+        its selection as a whole object. See VectorView."""
+        self.document_item.set_view(replace(self.document_item.view, object_mode=on))
+
     # ------------------------------------------------------- move preview
 
     def preview_move(self, drawing: VectorDrawing, offsets: Mapping[Point, PointLike], grabbed: bool = False) -> None:
@@ -158,12 +163,13 @@ class Canvas(QGraphicsView):
         if item is not None:
             item.clear_move_preview()
 
-    def preview_offset(self, items: Iterable[Item], delta: PointLike) -> None:
-        """Show whole `items` moved by `delta`, without moving them."""
+    def preview_offset(self, items: Iterable[Item], delta: PointLike, grabbed: bool = False) -> None:
+        """Show whole `items` moved by `delta`, without moving them -- with
+        `grabbed`, as a grab's move."""
         for item in items:
             view = self.document_item.view_of(item)
             if view is not None:
-                view.preview_offset(delta)
+                view.preview_offset(delta, grabbed)
 
     def end_offset_preview(self, items: Iterable[Item]) -> None:
         self.preview_offset(items, (0.0, 0.0))
