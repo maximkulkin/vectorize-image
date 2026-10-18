@@ -3,8 +3,9 @@ panel and the settings around it.
 
 Opening an image makes a fresh document of two layers, bottom to top:
 "Image", holding the picture, and "Drawing", an empty vector drawing that
-starts out as the current layer. Pen and Edit work on the current layer's
-drawing. The select tools -- Tweak (which also drags), Box and Paint --
+starts out as the current layer. Importing an SVG adds its shapes, as a
+vector drawing, in a new layer above the current one. Pen and Edit work
+on the current layer's drawing. The select tools -- Tweak (which also drags), Box and Paint --
 and Move work in either mode: object mode, where they select and move whole drawings and
 images of the current layer, or edit mode, where they select and move the current drawing's
 points, lines or polygons. Edit Mode toggles on and off -- Tab,
@@ -18,6 +19,7 @@ what's in it.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import TypedDict
 
 import numpy as np
@@ -43,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import binarize, simplify, svgwrite, tracing
+from .. import binarize, simplify, svgread, svgwrite, tracing
 from ..document import Document, Layer, RasterImage, Remove, VectorDrawing
 from ..signals import disconnect
 from ..typedefs import ElementMode, Shape
@@ -186,6 +188,11 @@ class MainWindow(QMainWindow):
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_image)
 
+        import_action = QAction("&Import SVG...", self)
+        import_action.setShortcut("Ctrl+I")
+        import_action.setToolTip("Import SVG: add an SVG file's shapes in a new layer")
+        import_action.triggered.connect(self._import_svg)
+
         self.save_action = QAction(themed_icon("save"), "&Save Vector as SVG...", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.setEnabled(False)
@@ -319,6 +326,7 @@ class MainWindow(QMainWindow):
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(open_action)
+        file_menu.addAction(import_action)
         file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
@@ -500,6 +508,27 @@ class MainWindow(QMainWindow):
         self._update_save_enabled()
         self._refresh_edge_source()
         self._update_status()
+
+    def _import_svg(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import SVG", "", "SVG files (*.svg)")
+        if path:
+            self.import_svg(path)
+
+    def import_svg(self, path: str) -> None:
+        """Add an SVG file's shapes, as a vector drawing, in a new layer
+        named after the file, right above the current one -- as one undo
+        step."""
+        try:
+            drawing = svgread.load_svg(path)
+        except (OSError, svgread.SvgError) as exc:
+            QMessageBox.warning(self, "Could not import SVG", f"Failed to load:\n{path}\n\n{exc}")
+            return
+        if not drawing:
+            QMessageBox.warning(self, "Could not import SVG", f"There are no shapes in:\n{path}")
+            return
+        self.document.add_layer(Layer(Path(path).stem, [drawing]), "Import SVG")
+        self.canvas.fit()
+        self.canvas.setFocus()
 
     def _exported_drawings(self) -> list[VectorDrawing]:
         """Every vector drawing in a visible layer, bottom to top -- what's saved."""

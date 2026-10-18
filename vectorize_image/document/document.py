@@ -55,10 +55,16 @@ class Document:
         names = {layer.name for layer in self.layers}
         number = next(n for n in range(1, len(names) + 2) if f"Layer {n}" not in names)
         layer = Layer(f"Layer {number}")
+        self.add_layer(layer)
+        return layer
+
+    def add_layer(self, layer: Layer, text: str = "New layer") -> None:
+        """Add `layer`, with whatever is in it, right above the current
+        layer (or on top, with none current), and make it current -- as one
+        undo step, called `text`."""
         current = self._current_layer
         index = len(self.layers) if current is None else self.layers.index(current) + 1
-        self.history.push(InsertLayer(self, layer, index))
-        return layer
+        self.history.push(InsertLayer(self, layer, index, text))
 
     def rename_layer(self, layer: Layer, name: str) -> None:
         """Rename `layer`, as one undo step -- or do nothing, if that's its
@@ -151,8 +157,8 @@ class InsertLayer(Command):
     """Put a layer into the document at `index` (bottom up) and make it
     current; undo takes it out again, and makes current whatever was."""
 
-    def __init__(self, document: Document, layer: Layer, index: int) -> None:
-        super().__init__("New layer")
+    def __init__(self, document: Document, layer: Layer, index: int, text: str = "New layer") -> None:
+        super().__init__(text)
         self.document: Final[Document] = document
         self.layer: Final[Layer] = layer
         self.index: Final[int] = index

@@ -170,6 +170,24 @@ def test_new_layer_goes_above_the_current_one_with_a_free_name() -> None:
     assert list(document.layers) == [bottom, top] and document.current_layer is bottom
 
 
+def test_add_layer_goes_above_the_current_one_with_its_items() -> None:
+    bottom, top = Layer("bottom"), Layer("top")
+    document = Document([bottom, top])
+    document.current_layer = bottom
+    drawing = VectorDrawing()
+    added = Layer("added", [drawing])
+
+    document.add_layer(added, "Import")
+
+    assert list(document.layers) == [bottom, added, top]
+    assert document.current_layer is added and document.current_drawing is drawing
+    assert document.history.undo_text() == "Import"
+    document.history.undo()
+    assert list(document.layers) == [bottom, top] and document.current_layer is bottom
+    document.history.redo()
+    assert list(document.layers) == [bottom, added, top] and document.current_layer is added
+
+
 def test_move_layer_is_undoable_and_skips_no_ops() -> None:
     a, b, c = Layer("a"), Layer("b"), Layer("c")
     document = Document([a, b, c])

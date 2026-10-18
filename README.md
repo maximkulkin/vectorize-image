@@ -71,6 +71,13 @@ Opening an image starts a fresh document of two layers: **Image**, holding
 the picture, and **Drawing** above it — an empty vector drawing, and the
 current layer, where the tools work.
 
+**File → Import SVG** (Ctrl+I) adds an SVG file's shapes — paths, rects,
+circles, ellipses, polygons, polylines and lines, with their transforms —
+as a vector drawing in a new layer above the current one, named after the
+file. Each filled shape becomes a polygon (its subpaths its rings), and an
+unfilled one just its lines; colors, strokes, text, images and `<use>`
+references aren't brought in. Like any layer change, it's one undo step.
+
 ### Layers
 
 The **Layers** panel (a dock; show or hide it from **View → Layers**) lists

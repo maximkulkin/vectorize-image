@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -9,10 +10,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent, QModelIndex, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QModelIndex, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QFocusEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QMenu  # noqa: E402
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QMenu, QMessageBox  # noqa: E402
 
 from conftest import click  # noqa: E402
 from vectorize_image.document import Document, Layer, VectorDrawing  # noqa: E402
@@ -412,3 +413,67 @@ def test_typing_a_name_in_the_window_does_not_trigger_shortcuts(window: MainWind
 
     assert window.document.layers[1].name == "Layer"  # "Layer 2", less the 2, trimmed
     assert window.document.selection.mode == "points"
+
+
+SQUARE_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+    '<path d="M10,10 H40 V40 H10 Z"/><circle cx="70" cy="70" r="10"/>'
+    "</svg>"
+)
+
+
+def test_import_svg_adds_its_shapes_in_a_new_layer(window: MainWindow, diamond_path: str, tmp_path: Path) -> None:
+    window.load_image(diamond_path)
+    image_layer, drawing_layer = window.document.layers
+    window.document.current_layer = image_layer
+    svg_path = tmp_path / "shapes.svg"
+    svg_path.write_text(SQUARE_SVG)
+
+    window.import_svg(str(svg_path))
+
+    layers = window.document.layers
+    assert [layer.name for layer in layers] == ["Image", "shapes", "Drawing"]
+    imported = window.document.current_layer
+    assert imported is layers[1]
+    drawing = window.document.current_drawing
+    assert drawing is not None and len(drawing.polygons) == 2
+    assert window.canvas.document_item.item_for(drawing) is not None
+    assert [row.layer.name for row in window.layers_panel.rows] == ["Drawing", "shapes", "Image"]
+    assert window.undo_action.text() == "&Undo Import SVG"
+
+    window.undo_action.trigger()
+    assert list(window.document.layers) == [image_layer, drawing_layer]
+    assert window.document.current_layer is image_layer
+    window.redo_action.trigger()
+    assert window.document.current_layer is imported
+
+
+def test_import_svg_into_an_empty_document(window: MainWindow, tmp_path: Path) -> None:
+    svg_path = tmp_path / "shapes.svg"
+    svg_path.write_text(SQUARE_SVG)
+
+    window.import_svg(str(svg_path))
+
+    assert [layer.name for layer in window.document.layers] == ["shapes"]
+    assert window.canvas.sceneRect().contains(QRectF(10, 10, 70, 70))  # fitted to what came in
+
+
+@pytest.mark.parametrize("content", ["not an svg", '<svg xmlns="http://www.w3.org/2000/svg"/>'])
+def test_import_svg_warns_about_files_it_cannot_use(
+    window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    warnings: list[str] = []
+
+    def warning(_parent: object, title: str, _text: str) -> QMessageBox.StandardButton:
+        warnings.append(title)
+        return QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QMessageBox, "warning", warning)
+    svg_path = tmp_path / "bad.svg"
+    svg_path.write_text(content)
+
+    window.import_svg(str(svg_path))
+    window.import_svg(str(tmp_path / "missing.svg"))
+
+    assert warnings == ["Could not import SVG"] * 2
+    assert not window.document.layers and not window.document.history.can_undo()
