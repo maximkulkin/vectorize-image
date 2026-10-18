@@ -21,7 +21,9 @@ Select Connected (Ctrl+L) grows a selection of points or lines to
 everything joined to it through lines, and A adds a point to a line,
 splitting it in two: hover the line to preview the point, click to add it.
 Dissolve Points (Ctrl+Backspace) is its reverse, for selected points:
-each one where two lines meet goes, the two merging into one.
+each one where two lines meet goes, the two merging into one. Flip
+Horizontally (H) and Flip Vertically (V) mirror the selection, in either
+mode, across the middle of the box around it -- an image's pixels too.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ from ..clipboard import Clipboard
 from ..document import Document, Layer, RasterImage, Remove, VectorDrawing
 from ..edit import elements_connected
 from ..signals import disconnect
-from ..typedefs import ElementMode, Shape
+from ..typedefs import Axis, ElementMode, Shape
 from .canvas import Canvas
 from .document_items import VectorStyle
 from .layers_panel import LayersPanel
@@ -118,6 +120,8 @@ class MainWindow(QMainWindow):
     select_connected_action: QAction
     add_point_action: QAction
     dissolve_points_action: QAction
+    flip_horizontal_action: QAction
+    flip_vertical_action: QAction
     trace_tool_action: QAction
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
@@ -274,6 +278,22 @@ class MainWindow(QMainWindow):
         self.dissolve_points_action.setEnabled(False)
         self.dissolve_points_action.triggered.connect(self._dissolve_points)
 
+        self.flip_horizontal_action = QAction(themed_icon("flip_horizontal"), "Flip &Horizontally", self)
+        self.flip_horizontal_action.setShortcut(QKeySequence(Qt.Key.Key_H))
+        self.flip_horizontal_action.setToolTip(
+            "Flip Horizontally (H): mirror the selected objects, or points, lines or polygons, left to right"
+        )
+        self.flip_horizontal_action.setEnabled(False)
+        self.flip_horizontal_action.triggered.connect(lambda: self._flip("x"))
+
+        self.flip_vertical_action = QAction(themed_icon("flip_vertical"), "Flip &Vertically", self)
+        self.flip_vertical_action.setShortcut(QKeySequence(Qt.Key.Key_V))
+        self.flip_vertical_action.setToolTip(
+            "Flip Vertically (V): mirror the selected objects, or points, lines or polygons, top to bottom"
+        )
+        self.flip_vertical_action.setEnabled(False)
+        self.flip_vertical_action.triggered.connect(lambda: self._flip("y"))
+
         # The mode -- object, or with Edit Mode on, edit -- is the
         # selection's: "objects", to select whole items, or "points",
         # "lines" or "polygons" of the current drawing, as the checked one
@@ -415,6 +435,9 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.select_connected_action)
         edit_menu.addAction(self.add_point_action)
         edit_menu.addAction(self.dissolve_points_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.flip_horizontal_action)
+        edit_menu.addAction(self.flip_vertical_action)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(zoom_in_action)
@@ -430,6 +453,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
         toolbar.addAction(self.delete_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.flip_horizontal_action)
+        toolbar.addAction(self.flip_vertical_action)
 
         view_toolbar = self.addToolBar("View")
         view_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
@@ -571,8 +597,10 @@ class MainWindow(QMainWindow):
 
         if self.image is not None:
             disconnect(self.image.moved, self._apply_edge_source)
+            disconnect(self.image.flipped, self._refresh_edge_source)
         self.image = image
         image.moved.connect(self._apply_edge_source)
+        image.flipped.connect(self._refresh_edge_source)
         layers = self.document.layers
         for layer in list(layers):
             layers.remove(layer)
@@ -839,6 +867,9 @@ class MainWindow(QMainWindow):
         )
         self.add_point_action.setEnabled(self.tool is self.edit_tool)
         self.dissolve_points_action.setEnabled(self.tool is self.edit_tool and self.edit_tool.can_dissolve())
+        can_flip = selecting and self.tool.can_flip()
+        self.flip_horizontal_action.setEnabled(can_flip)
+        self.flip_vertical_action.setEnabled(can_flip)
 
     def _selecting(self) -> bool:
         return self.tool is self.object_tool or self.tool is self.edit_tool
@@ -875,6 +906,10 @@ class MainWindow(QMainWindow):
     def _dissolve_points(self) -> None:
         if self.tool is self.edit_tool:
             self.edit_tool.dissolve_selection()
+
+    def _flip(self, axis: Axis) -> None:
+        if self._selecting():
+            self.tool.flip_selection(axis)
 
     def _update_save_enabled(self) -> None:
         self.save_action.setEnabled(any(drawing.polygons for drawing in self._exported_drawings()))

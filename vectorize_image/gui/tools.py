@@ -38,6 +38,7 @@ from ..document import (
     Command,
     Document,
     Element,
+    FlipItems,
     Item,
     Layer,
     Line,
@@ -66,6 +67,7 @@ from ..edit import (
     dissolvable,
     dissolve_point,
     elements_to_delete,
+    flip_elements,
     mirrored_partner,
     points_to_move,
     split_line,
@@ -102,8 +104,8 @@ OBJECT_HINT = (
     "for more) or drag one to move it; or drag a box (B) or paint (C), "
     "then drag from anywhere with Move -- or press G to move them with the "
     "cursor and click to place them (X or Y keeps to one axis, Esc "
-    "cancels). Press Tab to edit the layer's drawing, and Tab again to "
-    "come back. Esc deselects."
+    "cancels); H or V flips them horizontally or vertically. Press Tab to "
+    "edit the layer's drawing, and Tab again to come back. Esc deselects."
 )
 TRACE_HINT = (
     "Click to place a point. Move the cursor to preview a curve snapped to "
@@ -116,7 +118,8 @@ EDIT_HINT = (
     "with Tweak (W), click or drag one to move it; or drag a box (B) or "
     "paint (C), then drag from anywhere with Move, or press G to move them "
     "with the cursor and click to place them (X or Y keeps to one axis) -- "
-    "or press Delete to remove them. Control points (purple) show for what's selected: "
+    "or press Delete to remove them, or H or V to flip them horizontally or "
+    "vertically. Control points (purple) show for what's selected: "
     "drag one to reshape its curve, leaving the selection as it is -- with "
     "Shift, its partner across the point swings opposite, keeping the curve "
     "smooth there. Moving a point carries its own along. Press A, then click "
@@ -182,6 +185,14 @@ class Tool:
     def delete_selection(self) -> None:
         pass
 
+    def can_flip(self) -> bool:
+        return False
+
+    def flip_selection(self, axis: Axis) -> None:
+        """Flip the selection along `axis` -- along x for a horizontal flip
+        -- across its middle, as one undo step."""
+        del axis  # nothing to flip
+
     def _add_overlays(self, items: Iterable[QGraphicsItem]) -> None:
         for item in items:
             self.canvas.add_overlay(item)
@@ -214,6 +225,7 @@ def _shifted(bounds: tuple[np.ndarray, np.ndarray], offset: tuple[float, float])
 
 
 AXIS_KEYS: Final[dict[Qt.Key, Axis]] = {Qt.Key.Key_X: "x", Qt.Key.Key_Y: "y"}
+_FLIP_TEXT: Final[dict[Axis, str]] = {"x": "Horizontally", "y": "Vertically"}
 
 
 def _constrained(delta: tuple[float, float], axis: Axis | None) -> tuple[float, float]:
@@ -1383,6 +1395,21 @@ class EditTool(SelectingTool[Element]):
         if doomed:
             self.document.history.push(Remove(drawing, doomed, f"Delete {mode.title()}"))
 
+    @override
+    def can_flip(self) -> bool:
+        selection = self.document.selection
+        return selection.mode != "objects" and selection.drawing is not None and bool(selection.elements)
+
+    @override
+    def flip_selection(self, axis: Axis) -> None:
+        selection = self.document.selection
+        mode, drawing = selection.mode, selection.drawing
+        if mode == "objects" or drawing is None:
+            return
+        command = flip_elements(drawing, selection.elements, axis, f"Flip {mode.title()} {_FLIP_TEXT[axis]}")
+        if command is not None:
+            self.document.history.push(command)
+
     def can_dissolve(self) -> bool:
         """Whether any of the selected points can be dissolved -- in
         "points" mode only (see edit.dissolvable)."""
@@ -1446,6 +1473,25 @@ class ObjectTool(SelectingTool[Item]):
         disconnect(self.document.history.changed, self._show_selection)
         super().deactivate()
         self._remove_overlays((self._selected_boxes,))
+
+    def _flippable(self) -> list[Item]:
+        """The selected items, less any empty drawings: there's nothing of them to flip."""
+        return [item for item in self.document.selection.objects if not (isinstance(item, VectorDrawing) and not item)]
+
+    @override
+    def can_flip(self) -> bool:
+        return self.document.selection.mode == "objects" and bool(self._flippable())
+
+    @override
+    def flip_selection(self, axis: Axis) -> None:
+        """Flip the selected items -- drawings, and images, pixels and all
+        -- across the middle of the box around them all."""
+        items = self._flippable() if self.document.selection.mode == "objects" else []
+        if not items:
+            return
+        center = _middle(corner for item in items for corner in item_bounds(item))[0 if axis == "x" else 1]
+        noun = "Object" if len(items) == 1 else "Objects"
+        self.document.history.push(FlipItems(items, axis, center, f"Flip {noun} {_FLIP_TEXT[axis]}"))
 
     def _show_selection(self) -> None:
         tool = self.select_tool

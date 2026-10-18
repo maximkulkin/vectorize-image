@@ -27,7 +27,7 @@ from typing import ClassVar, Final, final, override
 
 import numpy as np
 from ..signals import Signal
-from ..typedefs import Bezier, PointLike, Shape
+from ..typedefs import Axis, Bezier, PointLike, Shape
 
 
 @final
@@ -472,6 +472,20 @@ class VectorDrawing:
                 case Line() | Polygon():
                     points.update(dict.fromkeys(target.points))
         self.place({point: self.position(point) + delta for point in points})
+
+    def flip(self, points: Iterable[Point], axis: Axis, center: float) -> None:
+        """Mirror points across a line through `center` on `axis`: along x
+        -- a horizontal flip -- across the vertical line x = `center`, or
+        along y across the horizontal one y = `center`. Flipping the same
+        points again undoes it.
+        """
+        index = 0 if axis == "x" else 1
+        positions: dict[Point, np.ndarray] = {}
+        for point in points:
+            position = self.position(point).copy()
+            position[index] = 2 * center - position[index]
+            positions[point] = position
+        self.place(positions)
 
     def place(self, positions: Mapping[Point, PointLike]) -> None:
         """Move points to the given absolute positions, as one change --

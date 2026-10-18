@@ -4,6 +4,7 @@ import pytest
 from vectorize_image.document import (
     Batch,
     Document,
+    Flip,
     Fragment,
     History,
     Insert,
@@ -70,6 +71,19 @@ def test_translate_and_back() -> None:
     assert np.allclose(drawing.position(a), (3, 4))
     history.undo()
     assert np.allclose(drawing.position(a), (0, 0))
+
+
+def test_flip_and_back() -> None:
+    drawing, a, b = _drawing_with_line()
+    history = History()
+
+    history.push(Flip(drawing, [a, b], "x", 2.0))
+    assert np.allclose(drawing.position(a), (4, 0)) and np.allclose(drawing.position(b), (-6, 0))
+    history.undo()
+    assert np.allclose(drawing.position(a), (0, 0)) and np.allclose(drawing.position(b), (10, 0))
+    history.redo()
+    history.push(Flip(drawing, [a], "y", -1.0))
+    assert np.allclose(drawing.position(a), (4, -2))
 
 
 def test_a_new_push_forgets_what_could_be_redone() -> None:

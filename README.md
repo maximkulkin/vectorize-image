@@ -165,6 +165,13 @@ removes what's selected: points take the curves through them along; curves
 leave their ends; polygons take their outline, except what a neighbouring
 polygon shares.
 
+**Edit → Flip Horizontally** (`H`) and **Flip Vertically** (`V`), also on
+the toolbar, mirror the selection across the middle of the box around it,
+as one undo step — in object mode whole drawings and images (an image's
+pixels too), in edit mode points, curves or polygons. Selected points take
+their control points along, so flipping a single point mirrors the curves'
+tangents at it.
+
 ### Undo/redo
 
 Every change to the document — a curve drawn, a move, a delete, clearing

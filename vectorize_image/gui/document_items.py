@@ -244,11 +244,10 @@ class RasterImageItem(ModelItem):
         super().__init__(parent)
         self.image: RasterImage = image
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        width, height = image.size
-        qimage = QImage(image.pixels.tobytes(), width, height, 4 * width, QImage.Format.Format_RGBA8888)
-        self.pixmap: QPixmap = QPixmap.fromImage(qimage.copy())  # copy: the bytes object doesn't outlive this
+        self.pixmap: QPixmap = self._render()
         self._on_moved()
         image.moved.connect(self._on_moved)
+        image.flipped.connect(self._on_flipped)
 
     @property
     def model(self) -> RasterImage:
@@ -257,6 +256,16 @@ class RasterImageItem(ModelItem):
     @override
     def detach(self) -> None:
         disconnect(self.image.moved, self._on_moved)
+        disconnect(self.image.flipped, self._on_flipped)
+
+    def _render(self) -> QPixmap:
+        width, height = self.image.size
+        qimage = QImage(self.image.pixels.tobytes(), width, height, 4 * width, QImage.Format.Format_RGBA8888)
+        return QPixmap.fromImage(qimage.copy())  # copy: the bytes object doesn't outlive this
+
+    def _on_flipped(self) -> None:
+        self.pixmap = self._render()
+        self.update()
 
     def _on_moved(self) -> None:
         self.setPos(self._placement())

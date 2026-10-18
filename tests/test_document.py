@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from vectorize_image.document import Document, Layer, MoveItems, ObservableList, RasterImage, VectorDrawing
+from vectorize_image.document import Document, FlipItems, Layer, MoveItems, ObservableList, RasterImage, VectorDrawing
 
 
 @pytest.fixture
@@ -119,6 +119,29 @@ def test_raster_image_moves_and_says_so() -> None:
     assert moves == [[5.0, 6.0]]
     with pytest.raises(ValueError):
         image.position[0] = 1
+
+
+def test_raster_image_flips_and_says_so() -> None:
+    pixels = np.full((2, 3, 4), 255, dtype=np.uint8)
+    pixels[0, 0] = (0, 0, 0, 255)  # black in the top left corner, on white
+    image = RasterImage(pixels, position=(10, 20))
+    assert image.grayscale[0, 0] == 0.0
+    events: list[str] = []
+    image.flipped.connect(lambda: events.append(f"flipped at {image.position.tolist()}"))
+    image.moved.connect(lambda: events.append("moved"))
+
+    image.flip("x", 15.0)  # across x = 15: the box from x = 10 to 13 goes to 17 to 20
+
+    assert image.position.tolist() == [17.0, 20.0]
+    assert events == ["flipped at [17.0, 20.0]", "moved"]  # both changed before either is told
+    assert tuple(image.pixels[0, 2]) == (0, 0, 0, 255) and tuple(image.pixels[0, 0]) == (255, 255, 255, 255)
+    assert image.grayscale[0, 2] == 0.0 and image.grayscale[0, 0] == 255.0  # not the old pixels' cache
+    with pytest.raises(ValueError):
+        image.pixels[0, 0] = 1
+
+    image.flip("y", 21.0)  # its own middle: it stays put
+    assert image.position.tolist() == [17.0, 20.0] and events[-1] == "flipped at [17.0, 20.0]"
+    assert tuple(image.pixels[1, 2]) == (0, 0, 0, 255)
 
 
 def test_raster_image_needs_rgba() -> None:
@@ -361,6 +384,25 @@ def test_move_items_moves_drawings_and_images_undoably() -> None:
     assert drawing.position(p).tolist() == [1.0, 2.0]
     document.history.redo()
     assert image.position.tolist() == [10.0, 20.0]
+
+
+def test_flip_items_mirrors_drawings_and_images_undoably() -> None:
+    image, drawing = _image(), VectorDrawing()
+    p, q = drawing.add_point((1, 2)), drawing.add_point((3, 4))
+    document = Document([Layer("a", [image, drawing])])
+    width, height = image.size
+
+    document.history.push(FlipItems([image, drawing], "y", 50.0, "Flip Objects Vertically"))
+
+    assert image.position.tolist() == [0.0, 100.0 - height]
+    assert drawing.position(p).tolist() == [1.0, 98.0]
+    assert drawing.position(q).tolist() == [3.0, 96.0]
+    assert document.history.undo_text() == "Flip Objects Vertically"
+
+    document.history.undo()
+    assert image.position.tolist() == [0.0, 0.0]
+    assert drawing.position(p).tolist() == [1.0, 2.0]
+    assert width == image.size[0]
 
 
 def test_selection_selects_objects_of_the_current_layer() -> None:

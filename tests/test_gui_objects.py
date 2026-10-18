@@ -3,8 +3,11 @@ main window. Headless (offscreen)."""
 
 import os
 
+from pathlib import Path
+
 import numpy as np
 import pytest
+from PIL import Image, ImageDraw
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,7 +21,7 @@ from PySide6.QtWidgets import QApplication, QToolBar  # noqa: E402
 from conftest import click, drag, key, move, press, release  # noqa: E402
 from vectorize_image.document import Layer, RasterImage, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
-from vectorize_image.gui.document_items import GRAB_COLOR  # noqa: E402
+from vectorize_image.gui.document_items import GRAB_COLOR, RasterImageItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import ACTIVE_COLOR  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
@@ -412,3 +415,59 @@ def test_moving_the_image_moves_its_canvas_item_and_pens_edges(window: MainWindo
     edges_after = window.trace_tool.edges.contours
     assert len(edges_after) == len(edges_before)
     assert all(np.allclose(after, before + offset) for after, before in zip(edges_after, edges_before))
+
+
+# ------------------------------------------------------------------ flip
+
+
+def test_h_flips_the_selected_drawings_in_their_box(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    other = _add_square(window, 100.0, 20.0)
+    assert not window.flip_horizontal_action.isEnabled()
+    click(window, 55, 55)
+    click(window, 110, 110, shift=True)
+    assert window.flip_horizontal_action.isEnabled()
+    corner = next(point for point in drawing.points if np.allclose(drawing.position(point), CORNERS[0]))
+
+    _shortcut(window, Qt.Key.Key_H)  # across x = 80, the middle of the box from 40 to 120 around both
+
+    assert np.allclose(drawing.position(corner), (120, 40))
+    assert np.allclose(_positions(other)[:, 0].min(), 40) and np.allclose(_positions(other)[:, 1].min(), 100)
+    assert window.document.history.undo_text() == "Flip Objects Horizontally"
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+
+
+def _lopsided_path(tmp_path: Path) -> str:
+    """A 60 x 40 white image with a black block at its left edge."""
+    path = tmp_path / "lopsided.png"
+    img = Image.new("L", (60, 40), 255)
+    ImageDraw.Draw(img).rectangle([0, 10, 19, 29], fill=0)
+    img.save(path)
+    return str(path)
+
+
+def test_v_and_h_flip_an_image_and_what_shows_it(window: MainWindow, tmp_path: Path) -> None:
+    window.load_image(_lopsided_path(tmp_path))
+    image = window.image
+    assert image is not None
+    edges_before = window.trace_tool.edges
+    window.document.current_layer = _layer(window, "Image")
+    click(window, 50, 20)
+    assert window.document.selection.objects == {image}
+
+    _shortcut(window, Qt.Key.Key_H)  # in its own box: it stays put, its pixels mirrored
+
+    assert image.position.tolist() == [0.0, 0.0]
+    assert image.pixels[20, 59, 0] == 0 and image.pixels[20, 0, 0] == 255
+    view = window.canvas.document_item.view_of(image)
+    assert isinstance(view, RasterImageItem)
+    assert view.pixmap.toImage().pixelColor(59, 20).value() == 0
+    edges = window.trace_tool.edges
+    assert edges is not edges_before  # traced again, from the flipped pixels
+    assert all(contour[:, 0].min() >= 40 - TOLERANCE for contour in edges.contours)
+    assert window.document.history.undo_text() == "Flip Object Horizontally"
+
+    window.undo_action.trigger()
+    assert image.pixels[20, 0, 0] == 0
+    assert view.pixmap.toImage().pixelColor(0, 20).value() == 0

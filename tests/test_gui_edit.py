@@ -775,3 +775,50 @@ def test_undo_names_what_the_edit_did(window: MainWindow, diamond_path: str) -> 
     click(window, 75, 75)
     window.delete_action.trigger()
     assert window.undo_action.text() == "&Undo Delete Polygons"
+
+
+# ------------------------------------------------------------------ flip
+
+
+def test_h_and_v_flip_the_selected_points(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    assert not window.flip_horizontal_action.isEnabled() and not window.flip_vertical_action.isEnabled()
+    top_left, top_right = _point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])
+    click(window, *CORNERS[0])
+    click(window, *CORNERS[1], shift=True)
+    assert window.flip_horizontal_action.isEnabled() and window.flip_vertical_action.isEnabled()
+
+    _key(window, Qt.Key.Key_H)  # across x = 75, the middle of the two
+
+    assert np.allclose(drawing.position(top_left), CORNERS[1]) and np.allclose(drawing.position(top_right), CORNERS[0])
+    assert window.document.history.undo_text() == "Flip Points Horizontally"
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(top_left), CORNERS[0])
+
+    _key(window, Qt.Key.Key_V)  # both on y = 40: they stay, the control points down the sides swing above it
+    assert np.allclose(drawing.position(top_left), CORNERS[0]) and np.allclose(drawing.position(top_right), CORNERS[1])
+    heights = sorted(float(drawing.position(control)[1]) for control in drawing.controls_at(top_left))
+    assert np.allclose(heights, [40 - 70 / 3, 40])
+    assert window.document.history.undo_text() == "Flip Points Vertically"
+
+
+def test_flipping_a_line_in_lines_mode(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    _key(window, Qt.Key.Key_2)
+    click(window, 75, 40)
+    line = _line_between(drawing, CORNERS[0], CORNERS[1])
+    start = drawing.position(line.start).copy()
+
+    window.flip_horizontal_action.trigger()
+
+    assert np.allclose(drawing.position(line.start), (150 - start[0], start[1]))
+    assert window.document.history.undo_text() == "Flip Lines Horizontally"
+
+
+def test_flip_is_not_for_the_pen(window: MainWindow, diamond_path: str) -> None:
+    _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    window.trace_tool_action.setChecked(True)
+    assert not window.flip_horizontal_action.isEnabled()
+    window.flip_horizontal_action.trigger()
+    assert not window.document.history.can_undo()

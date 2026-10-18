@@ -3,8 +3,8 @@ pushed onto the document's History, which does it and can undo it.
 
 Commands are small and targeted -- each one stores just what its own
 change needs to reverse it (the elements it inserted, the fragment it
-removed, the distance it moved things), never a snapshot of the whole
-drawing.
+removed, the distance it moved things, the line it mirrored them
+across), never a snapshot of the whole drawing.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import ClassVar, Final, override
 import numpy as np
 
 from ..signals import Signal
-from ..typedefs import PointLike
+from ..typedefs import Axis, PointLike
 from .vector import Element, Fragment, Point, VectorDrawing
 
 
@@ -91,6 +91,26 @@ class Translate(Command):
     @override
     def undo(self) -> None:
         self.drawing.translate(self.points, -self.delta)
+
+
+class Flip(Command):
+    """Mirror points across a line (see VectorDrawing.flip); undo mirrors
+    them back."""
+
+    def __init__(self, drawing: VectorDrawing, points: Iterable[Point], axis: Axis, center: float, text: str = "Flip") -> None:
+        super().__init__(text)
+        self.drawing: Final[VectorDrawing] = drawing
+        self.points: Final[frozenset[Point]] = frozenset(points)
+        self.axis: Final[Axis] = axis
+        self.center: Final[float] = center
+
+    @override
+    def redo(self) -> None:
+        self.drawing.flip(self.points, self.axis, self.center)
+
+    @override
+    def undo(self) -> None:
+        self.drawing.flip(self.points, self.axis, self.center)
 
 
 class Batch(Command):

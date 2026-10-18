@@ -10,6 +10,7 @@ from vectorize_image.edit import (
     dissolve_point,
     elements_connected,
     elements_to_delete,
+    flip_elements,
     mirrored_partner,
     points_to_move,
     split_bezier,
@@ -43,6 +44,35 @@ def test_moving_a_line_carries_the_neighbours_controls_at_its_ends() -> None:
     assert set(bc.points) <= moved
     assert set(drawing.controls_at(b)) <= moved  # ab's control next to b too
     assert a not in moved
+
+
+def test_flipping_a_point_alone_mirrors_its_control_points_around_it() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (20, 10)])
+    first, second = _curve(drawing, a, b), _curve(drawing, b, c)
+    command = flip_elements(drawing, [b], "y")
+    assert command is not None
+
+    History().push(command)
+
+    assert np.allclose(drawing.position(b), (10, 0))  # the middle of itself
+    assert np.allclose(drawing.bezier(first)[2], (20 / 3, 0))  # on the line through b: no change
+    assert np.allclose(drawing.bezier(second)[1], (10 + 10 / 3, -10 / 3))
+    assert np.allclose(drawing.position(c), (20, 10))  # not a control point of b's
+
+
+def test_flipping_a_polygon_mirrors_it_in_its_own_box() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (0, 30)])
+    lines = [_curve(drawing, a, b), drawing.add_line(b, c), drawing.add_line(c, a)]
+    polygon = drawing.add_polygon([lines])
+    command = flip_elements(drawing, [polygon], "x", "Flip Polygons Horizontally")
+    assert command is not None and command.text == "Flip Polygons Horizontally"
+
+    History().push(command)
+
+    assert [drawing.position(p).tolist() for p in (a, b, c)] == [[10.0, 0.0], [0.0, 0.0], [10.0, 30.0]]
+    assert flip_elements(drawing, [], "x") is None
 
 
 def test_controls_shown_for_a_point_are_its_own() -> None:

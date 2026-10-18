@@ -2,9 +2,9 @@
 points it shows, for a selection in each mode -- and how a shift-drag of
 one swings its partner around. Qt-free; the tool turns these into
 commands, and the canvas into handles. Also how adding a point splits a
-line in two (`split_line`), and how dissolving one merges the two lines
-through it back into one (`dissolve_point`) -- each comes with its
-command ready-made.
+line in two (`split_line`), how dissolving one merges the two lines
+through it back into one (`dissolve_point`), and how a selection is
+flipped (`flip_elements`) -- each comes with its command ready-made.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from typing import assert_never
 import numpy as np
 
 from .curve_fit import fit_cubic_with_tangents
-from .document import Batch, BezierCurve, Command, Element, Fragment, Insert, Line, Point, Polygon, Remove, VectorDrawing
+from .document import Batch, BezierCurve, Command, Element, Flip, Fragment, Insert, Line, Point, Polygon, Remove, VectorDrawing
 from .document.hit_test import is_control, sample
-from .typedefs import Bezier, ElementMode, PointLike
+from .typedefs import Axis, Bezier, ElementMode, PointLike
 
 
 def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozenset[Point]:
@@ -39,6 +39,31 @@ def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozense
     for point in list(points):
         points.update(drawing.controls_at(point))
     return frozenset(points)
+
+
+def flip_elements(drawing: VectorDrawing, items: Iterable[Element], axis: Axis, text: str = "Flip") -> Flip | None:
+    """The command that flips the selected `items` along `axis` (along x
+    for a horizontal flip), across the middle of the box around them --
+    around the selected points themselves, or every point of the selected
+    lines or polygons, control points included -- or None if there's
+    nothing to flip. What's flipped is what a drag would move (see
+    points_to_move), so a selected point's control points go with it:
+    flipping a single point mirrors the curves' tangents at it."""
+    spanned: set[Point] = set()
+    for item in items:
+        match item:
+            case Point():
+                spanned.add(item)
+            case Line():
+                spanned.update(item.points)
+            case Polygon():
+                spanned.update(item.points)
+    if not spanned:
+        return None
+    index = 0 if axis == "x" else 1
+    coordinates = [float(drawing.position(point)[index]) for point in spanned]
+    center = (min(coordinates) + max(coordinates)) / 2
+    return Flip(drawing, points_to_move(drawing, items), axis, center, text)
 
 
 def controls_shown(drawing: VectorDrawing, items: Iterable[Element]) -> frozenset[Point]:

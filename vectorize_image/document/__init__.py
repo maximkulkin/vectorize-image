@@ -10,6 +10,7 @@ signals of its parts rather than being told to refresh.
 
 from .document import (
     Document,
+    FlipItems,
     InsertItems,
     InsertLayer,
     Item,
@@ -20,7 +21,7 @@ from .document import (
     RemoveLayer,
     RenameLayer,
 )
-from .history import Batch, Command, History, Insert, Remove, Translate
+from .history import Batch, Command, Flip, History, Insert, Remove, Translate
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .selection import Selectable, Selection
@@ -32,6 +33,8 @@ __all__ = [
     "Command",
     "Document",
     "Element",
+    "Flip",
+    "FlipItems",
     "Fragment",
     "History",
     "Insert",

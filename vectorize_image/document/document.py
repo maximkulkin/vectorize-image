@@ -11,7 +11,7 @@ from typing import ClassVar, Final, override
 import numpy as np
 
 from ..signals import Signal, disconnect
-from ..typedefs import PointLike
+from ..typedefs import Axis, PointLike
 from .history import Command, History
 from .layer import Item, Layer
 from .observable_list import ObservableList
@@ -21,6 +21,7 @@ from .vector import VectorDrawing
 
 __all__ = [
     "Document",
+    "FlipItems",
     "InsertItems",
     "InsertLayer",
     "Item",
@@ -318,3 +319,31 @@ class MoveItems(Command):
                     item.translate(item.points, delta)
                 case RasterImage():
                     item.move_to(item.position + delta)
+
+
+class FlipItems(Command):
+    """Mirror whole items across a line through `center` on `axis` (see
+    VectorDrawing.flip) -- a drawing by mirroring all its points, an image
+    by mirroring its pixels and where it's placed; undo mirrors them back."""
+
+    def __init__(self, items: Iterable[Item], axis: Axis, center: float, text: str = "Flip") -> None:
+        super().__init__(text)
+        self.items: Final[tuple[Item, ...]] = tuple(items)
+        self.axis: Final[Axis] = axis
+        self.center: Final[float] = center
+
+    @override
+    def redo(self) -> None:
+        self._flip()
+
+    @override
+    def undo(self) -> None:
+        self._flip()
+
+    def _flip(self) -> None:
+        for item in self.items:
+            match item:
+                case VectorDrawing():
+                    item.flip(item.points, self.axis, self.center)
+                case RasterImage():
+                    item.flip(self.axis, self.center)
