@@ -20,3 +20,5 @@ type ElementMode = Literal["points", "lines", "polygons"]
 # What the selection selects: whole items of a layer (object mode), or one
 # of edit mode's kinds of element of a drawing.
 type SelectionMode = Literal["objects"] | ElementMode
+# The one axis a move can be kept to.
+type Axis = Literal["x", "y"]

@@ -5,7 +5,7 @@ progress, a half-drawn marquee, the cursor's last position), owns whatever
 transient overlay items it shows (see overlays.py) and puts them on the
 Canvas via add_overlay/remove_overlay, and while it's active it's the
 canvas's interaction handler (which calls its on_move/on_press/on_release/
-on_escape directly).
+on_escape/on_key directly).
 
 The select tools work on the document's selection, in whatever mode it's
 in: whole items -- drawings and images -- of the current layer, in object
@@ -23,11 +23,12 @@ active tool reacts.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from typing import ClassVar, override
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Sequence
+from typing import ClassVar, Final, override
 
 import numpy as np
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QGraphicsItem
 
 from .. import pen
@@ -37,6 +38,7 @@ from ..document import (
     Document,
     Element,
     Item,
+    Layer,
     MoveItems,
     Point,
     Remove,
@@ -58,13 +60,15 @@ from ..document.hit_test import (
 )
 from ..edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move
 from ..signals import Signal, disconnect
-from ..typedefs import Bezier
+from ..typedefs import Axis, Bezier, PointLike
 from .canvas import Canvas
+from .document_items import GRAB_COLOR
 from .overlays import (
     ACTIVE_COLOR,
     HOVER_COLOR,
     SNAP_HIGHLIGHT_COLOR,
     SNAP_HIGHLIGHT_RADIUS_PX,
+    AxisGuide,
     BoxOutline,
     BrushOutline,
     CurvePreview,
@@ -83,8 +87,10 @@ OBJECT_HINT = (
     "Object mode: select whole drawings and images of the current layer "
     "(pick it in the Layers panel) -- with Tweak (W), click (shift-click "
     "for more) or drag one to move it; or drag a box (B) or paint (C), "
-    "then drag from anywhere with Move (G). Press Tab to edit the layer's "
-    "drawing, and Tab again to come back. Esc deselects."
+    "then drag from anywhere with Move -- or press G to move them with the "
+    "cursor and click to place them (X or Y keeps to one axis, Esc "
+    "cancels). Press Tab to edit the layer's drawing, and Tab again to "
+    "come back. Esc deselects."
 )
 TRACE_HINT = (
     "Click to place a point. Move the cursor to preview a curve snapped to "
@@ -95,12 +101,13 @@ TRACE_HINT = (
 EDIT_HINT = (
     "Select points, lines or polygons of the current layer's drawing -- "
     "with Tweak (W), click or drag one to move it; or drag a box (B) or "
-    "paint (C), then drag from anywhere with Move (G) -- or press Delete "
-    "to remove them. Control points (purple) show for what's selected: "
+    "paint (C), then drag from anywhere with Move, or press G to move them "
+    "with the cursor and click to place them (X or Y keeps to one axis) -- "
+    "or press Delete to remove them. Control points (purple) show for what's selected: "
     "drag one to reshape its curve, leaving the selection as it is -- with "
     "Shift, its partner across the point swings opposite, keeping the curve "
     "smooth there. Moving a point carries its own along. Esc cancels a drag "
-    "in progress. Tab goes back to object mode."
+    "or a G move in progress. Tab goes back to object mode."
 )
 
 
@@ -140,6 +147,16 @@ class Tool:
     def on_escape(self) -> None:
         pass
 
+    def on_key(self, key: Qt.Key) -> bool:
+        """A key pressed on the canvas; returns whether the tool took it."""
+        del key  # none taken by default
+        return False
+
+    def start_grab(self, scene_pos: QPointF) -> None:
+        """Start moving the selection with the cursor, from `scene_pos`
+        (see MoveTool.start_grab) -- if the tool moves things."""
+        del scene_pos  # no-op by default
+
     def status_hint(self) -> str:
         return ""
 
@@ -178,6 +195,39 @@ def _one(selection: Selection) -> str:
 def _shifted(bounds: tuple[np.ndarray, np.ndarray], offset: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
     shift = np.asarray(offset, dtype=float)
     return (bounds[0] + shift, bounds[1] + shift)
+
+
+AXIS_KEYS: Final[dict[Qt.Key, Axis]] = {Qt.Key.Key_X: "x", Qt.Key.Key_Y: "y"}
+
+
+def _constrained(delta: tuple[float, float], axis: Axis | None) -> tuple[float, float]:
+    """`delta`, kept to `axis` if a grab is constrained to one."""
+    match axis:
+        case "x":
+            return (delta[0], 0.0)
+        case "y":
+            return (0.0, delta[1])
+        case None:
+            return delta
+
+
+def _toggled(axis: Axis | None, key: Qt.Key) -> Axis | None:
+    """The axis a grab is constrained to after pressing `key` (an AXIS_KEYS
+    one): that axis -- or none, if it already was."""
+    pressed = AXIS_KEYS[key]
+    return None if axis == pressed else pressed
+
+
+def _middle(positions: Iterable[PointLike]) -> tuple[float, float]:
+    """The middle of the box around `positions` -- where a grab's axis guide goes through."""
+    array = np.array([np.asarray(position, dtype=float) for position in positions])
+    x, y = (array.min(axis=0) + array.max(axis=0)) / 2
+    return (float(x), float(y))
+
+
+def _grab_hint(selection: Selection, axis: Axis | None) -> str:
+    along = "" if axis is None else f" along {axis.upper()}"
+    return f"moving {_describe(selection)}{along} · click to place, X or Y to keep to one axis, Esc to cancel"
 
 
 # ----------------------------------------------------------------- trace
@@ -317,9 +367,9 @@ class TraceTool(Tool):
 class SelectTool(Tool):
     """One of the interchangeable ways of selecting (and, for Tweak and
     Move, dragging) that the mode tools, EditTool and ObjectTool, hand
-    their canvas input to. All of them work on the document's selection;
-    Box and Paint Select the same in either mode, Tweak and Move in one
-    version for each, since whole items and elements move differently."""
+    their canvas input to. All of them work on the document's selection,
+    the same in either mode -- Tweak and Move with the mode's MoveTarget,
+    since whole items and elements move differently."""
 
     @property
     def selection(self) -> Selection:
@@ -379,77 +429,188 @@ def _tweak_click(selection: Selection, hit: Selectable | None, shift: bool) -> N
         selection.set_items({hit})
 
 
-class MoveTool(SelectTool):
-    """In edit mode: drag anywhere to move the selected points, lines or
-    polygons -- after selecting what's under the cursor, if it isn't
-    already (see _grab). Or drag one of the control points shown for the
-    selection (see edit.controls_shown) to move just it, reshaping its
-    curve without selecting anything -- with shift held at the press, its
-    partner swinging opposite it (see edit.mirrored_partner). The drag is
-    previewed on the canvas and committed as one move when the button is
-    released. TweakTool selects on press differently."""
+# ---------------------------------------------------------------- moving
+#
+# Move and Tweak drag (or grab) whatever the mode moves the same way; what
+# differs between the modes is what that is. A MoveTarget is one mode's
+# side of it -- what's under the cursor, its feedback, and what a drag
+# moves -- and a Moving is what one drag moves, from when it starts.
 
-    name: ClassVar[str] = "move"
+
+class Moving(ABC):
+    """What one drag or grab moves, fixed when it starts: it shows itself
+    moved by a delta, without moving, and makes the command that moves it."""
+
+    @abstractmethod
+    def middle(self) -> tuple[float, float]:
+        """The middle of what moves, where it is -- what a grab's axis guide goes through."""
+
+    @abstractmethod
+    def preview(self, delta: tuple[float, float], grabbed: bool) -> None:
+        """Show it moved by `delta` -- as a grab's move, if `grabbed`."""
+
+    @abstractmethod
+    def end_preview(self) -> None:
+        """Show it where it is again."""
+
+    @abstractmethod
+    def command(self, delta: tuple[float, float]) -> Command:
+        """The command that moves it by `delta`."""
+
+
+class PointsMoving(Moving):
+    """Points of a drawing, all moved the same."""
+
+    def __init__(self, canvas: Canvas, drawing: VectorDrawing, points: frozenset[Point], text: str) -> None:
+        self.canvas: Canvas = canvas
+        self.drawing: VectorDrawing = drawing
+        self.points: frozenset[Point] = points
+        self.text: str = text
+
+    @override
+    def middle(self) -> tuple[float, float]:
+        return _middle(self.drawing.position(point) for point in self.points)
+
+    @override
+    def preview(self, delta: tuple[float, float], grabbed: bool) -> None:
+        self.canvas.preview_move(self.drawing, {point: delta for point in self.points}, grabbed)
+
+    @override
+    def end_preview(self) -> None:
+        self.canvas.end_move_preview(self.drawing)
+
+    @override
+    def command(self, delta: tuple[float, float]) -> Command:
+        return Translate(self.drawing, self.points, delta, self.text)
+
+
+class HandleMoving(PointsMoving):
+    """A control point on its own -- with `mirror`, its partner across
+    the end they belong to swinging opposite it (see edit.mirrored_partner)."""
+
+    def __init__(self, canvas: Canvas, drawing: VectorDrawing, handle: Point, mirror: bool) -> None:
+        super().__init__(canvas, drawing, frozenset({handle}), "Move Control Point")
+        self.handle: Point = handle
+        self.mirror: bool = mirror
+
+    def _partner(self, delta: tuple[float, float]) -> tuple[Point, tuple[float, float]] | None:
+        """The partner, and how far it swings, if it does."""
+        partner = mirrored_partner(self.drawing, self.handle, delta) if self.mirror else None
+        if partner is None:
+            return None
+        point, (dx, dy) = partner
+        return point, (float(dx), float(dy))
+
+    @override
+    def preview(self, delta: tuple[float, float], grabbed: bool) -> None:
+        offsets = {self.handle: delta}
+        partner = self._partner(delta)
+        if partner is not None:
+            offsets[partner[0]] = partner[1]
+        self.canvas.preview_move(self.drawing, offsets, grabbed)
+
+    @override
+    def command(self, delta: tuple[float, float]) -> Command:
+        partner = self._partner(delta)
+        if partner is None:
+            return super().command(delta)
+        text = "Move Control Points"
+        return Batch([Translate(self.drawing, self.points, delta, text), Translate(self.drawing, {partner[0]}, partner[1])], text)
+
+
+class ItemsMoving(Moving):
+    """Whole items -- drawings and images."""
+
+    def __init__(self, canvas: Canvas, items: frozenset[Item]) -> None:
+        self.canvas: Canvas = canvas
+        self.items: frozenset[Item] = items
+
+    @override
+    def middle(self) -> tuple[float, float]:
+        return _middle(corner for item in self.items for corner in item_bounds(item))
+
+    @override
+    def preview(self, delta: tuple[float, float], grabbed: bool) -> None:
+        del grabbed  # object mode's boxes around the selection show a grab (see ObjectTool)
+        self.canvas.preview_offset(self.items, delta)
+
+    @override
+    def end_preview(self) -> None:
+        self.canvas.end_offset_preview(self.items)
+
+    @override
+    def command(self, delta: tuple[float, float]) -> Command:
+        return MoveItems(self.items, delta, "Move Object" if len(self.items) == 1 else "Move Objects")
+
+
+class MoveTarget[T: Selectable](ABC):
+    """One mode's side of moving, for MoveTool: what there is to hit under
+    the cursor, of type T; the feedback on it; and what a drag moves."""
+
+    selected_hint: ClassVar[str] = ""  # the status bar's tip on what else to do with a selection
+
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        self.document: Document = document
+        self.canvas: Canvas = canvas
+
+    @property
+    def selection(self) -> Selection:
+        return self.document.selection
+
+    @abstractmethod
+    def overlays(self) -> tuple[QGraphicsItem, ...]:
+        """The feedback's items, for the tool to put on the canvas while it's active."""
+
+    @abstractmethod
+    def hit(self, pos: tuple[float, float]) -> T | None:
+        """What's under the cursor."""
+
+    @abstractmethod
+    def show_hover(self, target: T | None) -> None:
+        """Highlight `target` as what's under the cursor -- or nothing, if
+        it's None or no longer there."""
+
+    def show_active(self, target: T | None, delta: tuple[float, float]) -> None:
+        """Highlight `target` as what a drag was pressed on, moved `delta` along."""
+        del target, delta  # nothing shown by default
+
+    def moving_alone(self, hit: T | None, shift: bool) -> Moving | None:
+        """A drag of `hit` on its own, leaving the selection as it is --
+        if `hit` is something dragged that way."""
+        del hit, shift  # nothing is, by default
+        return None
+
+    @abstractmethod
+    def selection_moving(self) -> Moving | None:
+        """What moving the selection moves, if anything."""
+
+
+class ElementTarget(MoveTarget[Element]):
+    """Edit mode's: the current drawing's points, lines or polygons, or a
+    control point shown for the selection (see edit.controls_shown), which
+    is dragged on its own -- reshaping its curve without selecting
+    anything -- with shift at the press, its partner swinging opposite it.
+    Moving a point carries its control points along (see
+    edit.points_to_move)."""
+
+    selected_hint: ClassVar[str] = "Delete to remove"
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas)
-        self._drag_origin: tuple[float, float] | None = None  # press position, for computing a drag's delta
-        self._drag_points: frozenset[Point] = frozenset()  # what the drag moves
-        self._drag_delta: tuple[float, float] = (0.0, 0.0)
-        self._handle: Point | None = None  # the control point a drag moves on its own, if it's that kind of drag
-        self._mirror: bool = False  # whether that drag swings the handle's partner opposite it (shift)
-        self._drawing: VectorDrawing | None = None  # what hover/drag state refers to
-        self._pressed: tuple[Element | None, bool] = (None, False)  # (what, with shift) the last press was on
-        self.hover_target: Element | None = None
-        self.active_target: Element | None = None  # what was pressed on, highlighted for the rest of the drag
         self._hover_highlight: HitHighlight = HitHighlight(HOVER_COLOR, 2.0)
         self._active_highlight: HitHighlight = HitHighlight(ACTIVE_COLOR, 2.5)
 
-    @property
-    def dragging(self) -> bool:
-        return self._drag_origin is not None
-
-    def _overlay_items(self) -> tuple[QGraphicsItem, ...]:
-        return self._hover_highlight.items() + self._active_highlight.items()
+    @override
+    def overlays(self) -> tuple[QGraphicsItem, ...]:
+        return (*self._hover_highlight.items(), *self._active_highlight.items())
 
     @override
-    def activate(self) -> None:
-        super().activate()
-        self._drawing = self.selection.drawing
-        self._add_overlays(self._overlay_items())
-        self.document.history.changed.connect(self._on_drawing_changed)
-        self.selection.changed.connect(self._on_selection_changed)
-
-    @override
-    def deactivate(self) -> None:
-        disconnect(self.document.history.changed, self._on_drawing_changed)
-        disconnect(self.selection.changed, self._on_selection_changed)
-        super().deactivate()
-        self._remove_overlays(self._overlay_items())
-
-    @override
-    def _abort(self) -> None:
-        self._end_drag()
-        self._set_hover(None)
-
-    def _on_drawing_changed(self) -> None:
-        # Something (undo/redo, a delete, our own move) changed the drawing:
-        # a drag in progress would move what may no longer be there, and
-        # the highlighted targets may have moved or gone.
-        self._end_drag()
-        self._set_hover(self.hover_target)
-
-    def _on_selection_changed(self) -> None:
-        if self.selection.drawing is not self._drawing:
-            self._abort()  # the current layer changed: a different drawing
-            self._drawing = self.selection.drawing
-
-    def _hit(self, pos: tuple[float, float]) -> Element | None:
-        """What's under the cursor: a control point shown for the
-        selection -- a handle, which takes precedence over the line it's
-        on, or the polygon it's in -- or else the mode's kind of element.
-        In points mode, whichever point is nearer, an end or a handle."""
-        mode, drawing = self.selection.mode, self._drawing
+    def hit(self, pos: tuple[float, float]) -> Element | None:
+        """A control point shown for the selection -- a handle, which takes
+        precedence over the line it's on, or the polygon it's in -- or else
+        the mode's kind of element. In points mode, whichever point is
+        nearer, an end or a handle."""
+        mode, drawing = self.selection.mode, self.selection.drawing
         if mode == "objects" or drawing is None:
             return None
         radius = self.canvas.scene_distance(SNAP_RADIUS_PX)
@@ -459,151 +620,133 @@ class MoveTool(SelectTool):
         handle = nearest_point(drawing, pos, radius, lambda point: point in handles)
         return handle if handle is not None else element_at(drawing, mode, pos, radius)
 
-    def _set_hover(self, target: Element | None) -> None:
-        self.hover_target = target
-        self._hover_highlight.show(self._drawing, target)
-
-    def _set_active(self, target: Element | None) -> None:
-        self.active_target = target
-        self._active_highlight.show(self._drawing, target, self._drag_delta)
-
-    def _end_drag(self) -> None:
-        if self._drawing is not None:
-            self.canvas.end_move_preview(self._drawing)
-        self._drag_origin = None
-        self._drag_points = frozenset()
-        self._drag_delta = (0.0, 0.0)
-        self._handle = None
-        self._mirror = False
-        self._set_active(None)
-
-    def _select_on_press(self, hit: Element | None, shift: bool) -> bool:
-        """Select what pressing on `hit` does; return whether to drag the selection."""
-        return _grab(self.selection, hit, shift)
-
-    def _on_click(self, hit: Element | None, shift: bool) -> None:
-        """A press on `hit` released without dragging."""
-        del hit, shift  # nothing more to do by default
+    @override
+    def show_hover(self, target: Element | None) -> None:
+        self._hover_highlight.show(self.selection.drawing, target)
 
     @override
-    def on_move(self, scene_pos: QPointF) -> None:
-        pos = _xy(scene_pos)
-        drawing = self._drawing
-        if drawing is None:
-            return
-        if self._drag_origin is not None:
-            self._drag_delta = (pos[0] - self._drag_origin[0], pos[1] - self._drag_origin[1])
-            offsets = {point: self._drag_delta for point in self._drag_points}
-            partner = self._partner_move(drawing)
-            if partner is not None:
-                offsets[partner[0]] = partner[1]
-            self.canvas.preview_move(drawing, offsets)
-            self._set_active(self.active_target)
-            return
-        self._set_hover(self._hit(pos))
+    def show_active(self, target: Element | None, delta: tuple[float, float]) -> None:
+        self._active_highlight.show(self.selection.drawing, target, delta)
 
     @override
-    def on_press(self, scene_pos: QPointF, shift: bool) -> None:
-        pos = _xy(scene_pos)
-        drawing = self._drawing
-        if drawing is None:
-            return
-        hit = self._hit(pos)
-        if isinstance(hit, Point) and is_control(drawing, hit):
-            # A handle: dragged on its own, whatever's selected, which stays so.
-            self._pressed = (None, shift)
-            self._start_drag(pos, frozenset({hit}), hit)
-            self._handle, self._mirror = hit, shift
-            return
-        self._pressed = (hit, shift)
-        if not self._select_on_press(hit, shift):
-            self._end_drag()
-            return
-        self._start_drag(pos, points_to_move(drawing, self.selection.elements), hit)
-
-    def _start_drag(self, pos: tuple[float, float], points: frozenset[Point], target: Element | None) -> None:
-        self._drag_origin = pos
-        self._drag_points = points
-        self._drag_delta = (0.0, 0.0)
-        self._set_hover(None)
-        self._set_active(target)
-
-    def _partner_move(self, drawing: VectorDrawing) -> tuple[Point, tuple[float, float]] | None:
-        """In a shift-drag of a handle: its partner, and how far it swings."""
-        if self._handle is None or not self._mirror:
+    def moving_alone(self, hit: Element | None, shift: bool) -> Moving | None:
+        drawing = self.selection.drawing
+        if drawing is None or not isinstance(hit, Point) or not is_control(drawing, hit):
             return None
-        partner = mirrored_partner(drawing, self._handle, self._drag_delta)
-        if partner is None:
+        return HandleMoving(self.canvas, drawing, hit, mirror=shift)
+
+    @override
+    def selection_moving(self) -> Moving | None:
+        mode, drawing = self.selection.mode, self.selection.drawing
+        if mode == "objects" or drawing is None:
             return None
-        point, (dx, dy) = partner
-        return point, (float(dx), float(dy))
-
-    @override
-    def on_release(self, scene_pos: QPointF) -> None:
-        drawing, points, delta, dragged = self._drawing, self._drag_points, self._drag_delta, self.dragging
-        partner = None if drawing is None else self._partner_move(drawing)
-        if self._handle is None:
-            text = f"Move {self.selection.mode.title()}"
-        else:
-            text = "Move Control Point" if partner is None else "Move Control Points"
-        self._end_drag()
-        if drawing is not None and points and delta != (0.0, 0.0):
-            move: Command = Translate(drawing, points, delta, text)
-            if partner is not None:
-                move = Batch([move, Translate(drawing, {partner[0]}, partner[1])], text)
-            self.document.history.push(move)
-        elif dragged:
-            self._on_click(*self._pressed)
-
-    @override
-    def on_escape(self) -> None:
-        if self._drag_origin is not None:
-            self._end_drag()
-        else:
-            self.selection.clear()
-
-    @override
-    def status_hint(self) -> str:
-        if self.selection:
-            return f"{_describe(self.selection)} selected · drag anywhere to move, Delete to remove"
-        return f"drag {_one(self.selection)} to select and move it"
+        points = points_to_move(drawing, self.selection.elements)
+        return PointsMoving(self.canvas, drawing, points, f"Move {mode.title()}") if points else None
 
 
-class ObjectMoveTool(SelectTool):
-    """In object mode: drag anywhere to move the selected drawings and
-    images -- after selecting what's under the cursor, if it isn't
-    already (see _grab). The drag is previewed on the canvas and committed
-    as one move when the button is released. ObjectTweakTool selects on
-    press differently."""
+class ItemTarget(MoveTarget[Item]):
+    """Object mode's: whole drawings and images of the current layer."""
 
-    name: ClassVar[str] = "move"
+    selected_hint: ClassVar[str] = "Tab to edit the current layer"
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas)
-        self._drag_origin: tuple[float, float] | None = None  # press position, for computing a drag's delta
-        self._drag_items: frozenset[Item] = frozenset()  # what the drag moves
-        self.drag_delta: tuple[float, float] = (0.0, 0.0)  # how far a drag in progress has moved them
-        self._pressed: tuple[Item | None, bool] = (None, False)  # (what, with shift) the last press was on
-        self.hover_target: Item | None = None
         self._hover_box: ItemBoxes = ItemBoxes(HOVER_COLOR, 1.0)
+
+    @override
+    def overlays(self) -> tuple[QGraphicsItem, ...]:
+        return (self._hover_box,)
+
+    @override
+    def hit(self, pos: tuple[float, float]) -> Item | None:
+        layer = self.selection.layer
+        if self.selection.mode != "objects" or layer is None:
+            return None
+        return item_at(layer, pos, self.canvas.scene_distance(SNAP_RADIUS_PX))
+
+    @override
+    def show_hover(self, target: Item | None) -> None:
+        layer = self.selection.layer
+        shown = target is not None and layer is not None and target in layer.items
+        boxes = [item_bounds(target)] if shown and target is not None else []
+        self._hover_box.show_boxes(boxes, self.canvas.scene_distance(ITEM_BOX_PAD_PX))
+
+    @override
+    def selection_moving(self) -> Moving | None:
+        items = self.selection.objects if self.selection.mode == "objects" else frozenset[Item]()
+        return ItemsMoving(self.canvas, items) if items else None
+
+
+class MoveTool[T: Selectable](SelectTool):
+    """Drag anywhere to move the selection -- after selecting what's under
+    the cursor, if it isn't already (see _grab) -- or drag something the
+    target drags on its own (an edit-mode control point). Or grab the
+    selection (see start_grab). Either way the move is previewed on the
+    canvas, without changing anything, and committed as one command. What
+    there is to hit, highlight and move is the mode's: the target's.
+    TweakTool selects on press differently."""
+
+    name: ClassVar[str] = "move"
+
+    def __init__(self, document: Document, canvas: Canvas, target: MoveTarget[T]) -> None:
+        super().__init__(document, canvas)
+        self.target: MoveTarget[T] = target
+        self._moving: Moving | None = None  # what a drag in progress moves
+        self._origin: tuple[float, float] = (0.0, 0.0)  # where it started, for computing its delta
+        self._pos: tuple[float, float] = (0.0, 0.0)  # the cursor's last position in it
+        self._delta: tuple[float, float] = (0.0, 0.0)
+        self._grabbing: bool = False  # whether it's a grab (see start_grab)
+        self._axis: Axis | None = None  # the one axis a grab is kept to, if it is
+        self._guide_through: tuple[float, float] | None = None  # the middle of what it moves, once needed
+        self._axis_guide: AxisGuide = AxisGuide()
+        # What hover and drag state refer to: the selection's layer and drawing.
+        self._context: tuple[Layer | None, VectorDrawing | None] = (None, None)
+        self._pressed: tuple[T | None, bool] = (None, False)  # (what, with shift) the last press was on
+        self.hover_target: T | None = None
+        self.active_target: T | None = None  # what was pressed on, highlighted for the rest of the drag
 
     @property
     def dragging(self) -> bool:
-        return self._drag_origin is not None
+        return self._moving is not None
+
+    @property
+    def grabbing(self) -> bool:
+        return self._grabbing
+
+    @property
+    def axis(self) -> Axis | None:
+        return self._axis
+
+    @property
+    def delta(self) -> tuple[float, float]:
+        """How far a drag in progress has moved what it moves."""
+        return self._delta
+
+    @property
+    def axis_guide(self) -> AxisGuide:
+        """The line a grab kept to an axis shows -- for inspection (e.g. by tests)."""
+        return self._axis_guide
+
+    def _overlay_items(self) -> tuple[QGraphicsItem, ...]:
+        return (*self.target.overlays(), self._axis_guide)
+
+    def _current_context(self) -> tuple[Layer | None, VectorDrawing | None]:
+        return (self.selection.layer, self.selection.drawing)
 
     @override
     def activate(self) -> None:
         super().activate()
-        self._add_overlays((self._hover_box,))
+        self._context = self._current_context()
+        self._add_overlays(self._overlay_items())
         self.document.history.changed.connect(self._on_document_changed)
-        self.document.current_layer_changed.connect(self._on_document_changed)
+        self.selection.changed.connect(self._on_selection_changed)
 
     @override
     def deactivate(self) -> None:
         disconnect(self.document.history.changed, self._on_document_changed)
-        disconnect(self.document.current_layer_changed, self._on_document_changed)
+        disconnect(self.selection.changed, self._on_selection_changed)
         super().deactivate()
-        self._remove_overlays((self._hover_box,))
+        self._remove_overlays(self._overlay_items())
 
     @override
     def _abort(self) -> None:
@@ -611,126 +754,181 @@ class ObjectMoveTool(SelectTool):
         self._set_hover(None)
 
     def _on_document_changed(self) -> None:
-        # Something (undo/redo, our own move, another current layer)
-        # changed what's there to select: a drag in progress would move
-        # what may have moved or gone, and the hover box may be out of
-        # place.
+        # Something (undo/redo, a delete, our own move) changed the
+        # document: a drag in progress would move what may no longer be
+        # there, and the highlighted targets may have moved or gone.
         self._end_drag()
         self._set_hover(self.hover_target)
 
-    def _hit(self, pos: tuple[float, float]) -> Item | None:
-        layer = self.selection.layer
-        if self.selection.mode != "objects" or layer is None:
-            return None
-        return item_at(layer, pos, self.canvas.scene_distance(SNAP_RADIUS_PX))
+    def _on_selection_changed(self) -> None:
+        layer, drawing = self._current_context()
+        if layer is not self._context[0] or drawing is not self._context[1]:
+            self._abort()  # another current layer, or drawing: what was hit or moving isn't there
+            self._context = (layer, drawing)
 
-    def _set_hover(self, target: Item | None) -> None:
-        layer = self.selection.layer
-        self.hover_target = target if target is not None and layer is not None and target in layer.items else None
-        boxes = [] if self.hover_target is None else [item_bounds(self.hover_target)]
-        self._hover_box.show_boxes(boxes, self.canvas.scene_distance(ITEM_BOX_PAD_PX))
+    def _set_hover(self, target: T | None) -> None:
+        self.hover_target = target
+        self.target.show_hover(target)
+
+    def _set_active(self, target: T | None) -> None:
+        self.active_target = target
+        self.target.show_active(target, self._delta)
+
+    def _start_drag(self, pos: tuple[float, float], moving: Moving, target: T | None) -> None:
+        self._moving = moving
+        self._origin = self._pos = pos
+        self._delta = (0.0, 0.0)
+        self._set_hover(None)
+        self._set_active(target)
+
+    def _drag_to(self, pos: tuple[float, float]) -> None:
+        """Preview the drag with the cursor at `pos` -- kept to a grab's axis, if it is."""
+        moving = self._moving
+        if moving is None:
+            return
+        self._pos = pos
+        self._delta = _constrained((pos[0] - self._origin[0], pos[1] - self._origin[1]), self._axis)
+        moving.preview(self._delta, self._grabbing)
+        self._set_active(self.active_target)
+        if self._axis is None:
+            self._axis_guide.hide()
+            return
+        if self._guide_through is None:
+            self._guide_through = moving.middle()
+        self._axis_guide.show_axis(self._axis, self._guide_through)
 
     def _end_drag(self) -> None:
-        self.canvas.end_offset_preview(self._drag_items)
-        self._drag_origin = None
-        self._drag_items = frozenset()
-        self.drag_delta = (0.0, 0.0)
+        moving, grabbing = self._moving, self._grabbing
+        if moving is not None:
+            moving.end_preview()
+        self._moving = None
+        self._delta = (0.0, 0.0)
+        self._grabbing = False
+        self._axis = None
+        self._guide_through = None
+        self._axis_guide.hide()
+        self._set_active(None)
+        if grabbing:
+            self.status_changed.emit()
 
-    def _select_on_press(self, hit: Item | None, shift: bool) -> bool:
+    def _commit(self) -> bool:
+        """End the drag, pushing what it moved as one command -- if it
+        moved anything. Returns whether it did."""
+        moving, delta = self._moving, self._delta
+        self._end_drag()
+        if moving is None or delta == (0.0, 0.0):
+            return False
+        self.document.history.push(moving.command(delta))
+        return True
+
+    def _select_on_press(self, hit: T | None, shift: bool) -> bool:
         """Select what pressing on `hit` does; return whether to drag the selection."""
         return _grab(self.selection, hit, shift)
 
-    def _on_click(self, hit: Item | None, shift: bool) -> None:
+    def _on_click(self, hit: T | None, shift: bool) -> None:
         """A press on `hit` released without dragging."""
         del hit, shift  # nothing more to do by default
 
     @override
+    def start_grab(self, scene_pos: QPointF) -> None:
+        """Grab the selection: from now on it moves with the cursor, from
+        `scene_pos` (where the cursor is) -- no button held -- previewed,
+        with the selection highlighted, until a click places it, as one
+        move, or Esc cancels it. X or Y keeps it to that axis, and pressing
+        the same again frees it. Nothing to grab, or a drag already going
+        on, and it's ignored."""
+        moving = None if self.dragging else self.target.selection_moving()
+        if moving is None:
+            return
+        pos = _xy(scene_pos)
+        self._pressed = (None, False)
+        self._grabbing = True
+        self._start_drag(pos, moving, None)
+        self._drag_to(pos)
+        self.status_changed.emit()
+
+    @override
     def on_move(self, scene_pos: QPointF) -> None:
         pos = _xy(scene_pos)
-        if self._drag_origin is not None:
-            self.drag_delta = (pos[0] - self._drag_origin[0], pos[1] - self._drag_origin[1])
-            self.canvas.preview_offset(self._drag_items, self.drag_delta)
-            return
-        self._set_hover(self._hit(pos))
+        if self.dragging:
+            self._drag_to(pos)
+        else:
+            self._set_hover(self.target.hit(pos))
 
     @override
     def on_press(self, scene_pos: QPointF, shift: bool) -> None:
         pos = _xy(scene_pos)
-        hit = self._hit(pos)
+        if self._grabbing:
+            self._drag_to(pos)
+            self._commit()
+            return
+        hit = self.target.hit(pos)
+        alone = self.target.moving_alone(hit, shift)
+        if alone is not None:
+            self._pressed = (None, shift)
+            self._start_drag(pos, alone, hit)
+            return
         self._pressed = (hit, shift)
-        if not self._select_on_press(hit, shift):
+        moving = self.target.selection_moving() if self._select_on_press(hit, shift) else None
+        if moving is None:
             self._end_drag()
             return
-        self._drag_origin = pos
-        self._drag_items = self.selection.objects
-        self.drag_delta = (0.0, 0.0)
-        self._set_hover(None)
+        self._start_drag(pos, moving, hit)
 
     @override
     def on_release(self, scene_pos: QPointF) -> None:
-        items, delta, dragged = self._drag_items, self.drag_delta, self.dragging
-        self._end_drag()
-        if items and delta != (0.0, 0.0):
-            text = "Move Object" if len(items) == 1 else "Move Objects"
-            self.document.history.push(MoveItems(items, delta, text))
-        elif dragged:
+        if self._grabbing:
+            return  # a grab ends with a press, not a release
+        dragged = self.dragging
+        if not self._commit() and dragged:
             self._on_click(*self._pressed)
 
     @override
     def on_escape(self) -> None:
-        if self._drag_origin is not None:
+        if self.dragging:
             self._end_drag()
         else:
             self.selection.clear()
 
     @override
+    def on_key(self, key: Qt.Key) -> bool:
+        if not self._grabbing or key not in AXIS_KEYS:
+            return False
+        self._axis = _toggled(self._axis, key)
+        self._drag_to(self._pos)
+        self.status_changed.emit()
+        return True
+
+    @override
     def status_hint(self) -> str:
+        if self._grabbing:
+            return _grab_hint(self.selection, self._axis)
         if self.selection:
-            return f"{_describe(self.selection)} selected · drag anywhere to move, Tab to edit the current layer"
+            return f"{_describe(self.selection)} selected · drag anywhere to move, {self.target.selected_hint}"
         return f"drag {_one(self.selection)} to select and move it"
 
 
-class TweakTool(MoveTool):
-    """In edit mode: click a point, line or polygon to select it (shift-
-    click to toggle, click nothing to deselect), or drag it to move it --
-    and the rest of the selection with it, if it's part of one."""
+class TweakTool[T: Selectable](MoveTool[T]):
+    """Click something to select it (shift-click to toggle, click nothing
+    to deselect), or drag it to move it -- and the rest of the selection
+    with it, if it's part of one."""
 
     name: ClassVar[str] = "tweak"
 
     @override
-    def _select_on_press(self, hit: Element | None, shift: bool) -> bool:
+    def _select_on_press(self, hit: T | None, shift: bool) -> bool:
         return _tweak(self.selection, hit, shift)
 
     @override
-    def _on_click(self, hit: Element | None, shift: bool) -> None:
+    def _on_click(self, hit: T | None, shift: bool) -> None:
         _tweak_click(self.selection, hit, shift)
 
     @override
     def status_hint(self) -> str:
+        if self._grabbing:
+            return _grab_hint(self.selection, self._axis)
         if self.selection:
-            return f"{_describe(self.selection)} selected · drag one to move them, Delete to remove"
-        return f"click {_one(self.selection)} to select it (shift-click for more), or drag it to move it"
-
-
-class ObjectTweakTool(ObjectMoveTool):
-    """In object mode: click a drawing or an image to select it (shift-
-    click to toggle, click nothing to deselect), or drag it to move it --
-    and the rest of the selection with it, if it's part of one."""
-
-    name: ClassVar[str] = "tweak"
-
-    @override
-    def _select_on_press(self, hit: Item | None, shift: bool) -> bool:
-        return _tweak(self.selection, hit, shift)
-
-    @override
-    def _on_click(self, hit: Item | None, shift: bool) -> None:
-        _tweak_click(self.selection, hit, shift)
-
-    @override
-    def status_hint(self) -> str:
-        if self.selection:
-            return f"{_describe(self.selection)} selected · drag one to move them, Tab to edit the current layer"
+            return f"{_describe(self.selection)} selected · drag one to move them, {self.target.selected_hint}"
         return f"click {_one(self.selection)} to select it (shift-click for more), or drag it to move it"
 
 
@@ -897,24 +1095,29 @@ class PaintSelectTool(SelectTool):
 # ----------------------------------------------------------------- modes
 
 
-class SelectingTool(Tool):
+class SelectingTool[T: Selectable](Tool):
     """A mode -- edit or object -- whose canvas input all goes to one of
     its sub-tools: Tweak, Box or Paint Select, or Move, which the main
-    window keeps the same in both modes."""
+    window keeps the same in both modes. Tweak and Move each move what
+    their own `make_target` makes: the mode's MoveTarget."""
 
     captures_mouse: ClassVar[bool] = True
 
-    def __init__(self, document: Document, canvas: Canvas, tweak_tool: SelectTool, move_tool: SelectTool) -> None:
+    def __init__(
+        self, document: Document, canvas: Canvas, make_target: Callable[[Document, Canvas], MoveTarget[T]]
+    ) -> None:
         super().__init__(document, canvas)
-        self.tweak_tool: SelectTool = tweak_tool
+        self.tweak_tool: TweakTool[T] = TweakTool(document, canvas, make_target(document, canvas))
         self.box_tool: BoxSelectTool = BoxSelectTool(document, canvas)
         self.paint_tool: PaintSelectTool = PaintSelectTool(document, canvas)
-        self.move_tool: SelectTool = move_tool
+        self.move_tool: MoveTool[T] = MoveTool(document, canvas, make_target(document, canvas))
         self._select_tools: dict[str, SelectTool] = {
             t.name: t for t in (self.tweak_tool, self.box_tool, self.paint_tool, self.move_tool)
         }
         self.select_tool: SelectTool = self.tweak_tool
         self._active: bool = False
+        for tool in self._select_tools.values():
+            tool.status_changed.connect(self.status_changed.emit)  # e.g. a grab starting or ending
 
     def set_select_tool(self, name: str) -> None:
         tool = self._select_tools[name]
@@ -954,11 +1157,19 @@ class SelectingTool(Tool):
         self.select_tool.on_escape()
 
     @override
+    def on_key(self, key: Qt.Key) -> bool:
+        return self.select_tool.on_key(key)
+
+    @override
+    def start_grab(self, scene_pos: QPointF) -> None:
+        self.select_tool.start_grab(scene_pos)
+
+    @override
     def status_hint(self) -> str:
         return self.select_tool.status_hint()
 
 
-class EditTool(SelectingTool):
+class EditTool(SelectingTool[Element]):
     """Edit mode -- the selection in "points", "lines" or "polygons" mode:
     select those of the current drawing with one of the select sub-tools,
     then move them (with Tweak or Move) or delete them."""
@@ -967,7 +1178,7 @@ class EditTool(SelectingTool):
     hint: ClassVar[str] = EDIT_HINT
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
-        super().__init__(document, canvas, TweakTool(document, canvas), MoveTool(document, canvas))
+        super().__init__(document, canvas, ElementTarget)
 
     @override
     def activate(self) -> None:
@@ -997,18 +1208,24 @@ class EditTool(SelectingTool):
             self.document.history.push(Remove(drawing, doomed, f"Delete {mode.title()}"))
 
 
-class ObjectTool(SelectingTool):
+class ObjectTool(SelectingTool[Item]):
     """Object mode -- the selection in "objects" mode: select whole items
     -- drawings and images -- of the current layer with one of the select
     sub-tools, and move them (with Tweak or Move). A box around each
-    selected item shows what's selected, following a move being dragged."""
+    selected item shows what's selected, following a move being dragged --
+    in GRAB_COLOR while it's a grab."""
 
     name: ClassVar[str] = "object"
     hint: ClassVar[str] = OBJECT_HINT
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
-        super().__init__(document, canvas, ObjectTweakTool(document, canvas), ObjectMoveTool(document, canvas))
+        super().__init__(document, canvas, ItemTarget)
         self._selected_boxes: ItemBoxes = ItemBoxes(ACTIVE_COLOR, 1.5)
+
+    @property
+    def selected_boxes(self) -> ItemBoxes:
+        """The boxes around what's selected -- for inspection (e.g. by tests)."""
+        return self._selected_boxes
 
     @override
     def activate(self) -> None:
@@ -1027,14 +1244,21 @@ class ObjectTool(SelectingTool):
 
     def _show_selection(self) -> None:
         tool = self.select_tool
-        offset = tool.drag_delta if isinstance(tool, ObjectMoveTool) else (0.0, 0.0)  # Tweak's too: it's a Move
+        moving = isinstance(tool, MoveTool)  # Tweak's too: it's a Move
+        offset = tool.delta if moving else (0.0, 0.0)
         boxes = [_shifted(item_bounds(item), offset) for item in self.document.selection.objects]
+        self._selected_boxes.set_color(GRAB_COLOR if moving and tool.grabbing else ACTIVE_COLOR)
         self._selected_boxes.show_boxes(boxes, self.canvas.scene_distance(ITEM_BOX_PAD_PX))
 
     @override
     def on_move(self, scene_pos: QPointF) -> None:
         super().on_move(scene_pos)
         self._show_selection()  # following a move being dragged
+
+    @override
+    def on_press(self, scene_pos: QPointF, shift: bool) -> None:
+        super().on_press(scene_pos, shift)
+        self._show_selection()  # e.g. a grab placed where it started
 
     @override
     def on_release(self, scene_pos: QPointF) -> None:
@@ -1044,4 +1268,15 @@ class ObjectTool(SelectingTool):
     @override
     def on_escape(self) -> None:
         super().on_escape()
+        self._show_selection()
+
+    @override
+    def on_key(self, key: Qt.Key) -> bool:
+        taken = super().on_key(key)
+        self._show_selection()
+        return taken
+
+    @override
+    def start_grab(self, scene_pos: QPointF) -> None:
+        super().start_grab(scene_pos)
         self._show_selection()

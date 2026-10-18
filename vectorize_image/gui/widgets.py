@@ -10,8 +10,8 @@ from PySide6.QtWidgets import QDoubleSpinBox, QGraphicsScene, QGraphicsView, QHB
 
 
 class InteractionHandler(Protocol):
-    """Takes over the view's left mouse button (and Escape) -- see
-    ZoomableGraphicsView.set_interaction_handler."""
+    """Takes over the view's left mouse button (and Escape, and any other
+    key it wants) -- see ZoomableGraphicsView.set_interaction_handler."""
 
     def on_move(self, scene_pos: QPointF) -> None: ...
 
@@ -20,6 +20,8 @@ class InteractionHandler(Protocol):
     def on_release(self, scene_pos: QPointF) -> None: ...
 
     def on_escape(self) -> None: ...
+
+    def on_key(self, key: Qt.Key) -> bool: ...
 
 
 class SliderSpinRow(QWidget):
@@ -183,8 +185,11 @@ class ZoomableGraphicsView(QGraphicsView):
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
-        if key == Qt.Key.Key_Escape and self._interaction_handler is not None:
-            self._interaction_handler.on_escape()
+        handler = self._interaction_handler
+        if key == Qt.Key.Key_Escape and handler is not None:
+            handler.on_escape()
+        elif handler is not None and not event.isAutoRepeat() and handler.on_key(Qt.Key(key)):
+            pass  # the handler took it
         elif key == Qt.Key.Key_Left:
             self._pan(-self.PAN_STEP, 0)
         elif key == Qt.Key.Key_Right:
@@ -205,8 +210,10 @@ class ZoomableGraphicsView(QGraphicsView):
         handler that takes over the left mouse button for something other
         than panning -- used for manual tracing and edit-point dragging.
         `handler` needs on_move(scene_pos), on_press(scene_pos, shift),
-        on_release(scene_pos), and on_escape() methods. `shift` is whether
-        the Shift key was held at press-time (for toggling a selection).
+        on_release(scene_pos), on_escape() and on_key(key) methods.
+        `shift` is whether the Shift key was held at press-time (for
+        toggling a selection). on_key gets every other key pressed (not
+        repeats of one held down) first, and returns whether it took it.
         """
         self._interaction_handler = handler
         self.setDragMode(QGraphicsView.DragMode.NoDrag if handler else QGraphicsView.DragMode.ScrollHandDrag)

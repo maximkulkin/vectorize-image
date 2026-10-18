@@ -42,6 +42,7 @@ INTERNAL_COLOR = QColor(0, 122, 255)  # a point two or more lines end at
 CONTROL_COLOR = QColor(171, 71, 188)  # distinct from the end points' blue/orange
 HANDLE_LINE_COLOR = QColor(160, 160, 160)
 SELECTION_COLOR = QColor(33, 150, 243)
+GRAB_COLOR = QColor(255, 255, 255)  # what a grab (G, see tools.MoveTool.start_grab) is moving
 
 LINE_WIDTH_PX = 2.2
 POINT_RADIUS_PX = 4.0
@@ -287,7 +288,8 @@ class VectorDrawingItem(ModelItem):
     A move being dragged in the Edit tool is shown as a preview -- the
     moving points drawn displaced, each by its own offset, and everything
     made from them with them -- without touching the drawing until the
-    move is committed.
+    move is committed. A grab's preview also shows the selection, which
+    is what it moves, highlighted in GRAB_COLOR rather than the usual.
 
     Line widths and point sizes stay fixed on screen at any zoom, so they
     poke out of the drawing's bounds by a few pixels; the Canvas repaints
@@ -300,6 +302,7 @@ class VectorDrawingItem(ModelItem):
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._view: VectorView = VectorView()
         self._offsets: dict[Point, np.ndarray] = {}  # the move preview: how far each moving point is shown moved
+        self._grabbed: bool = False  # whether the move preview is a grab's
         self._bounds: QRectF = self._compute_bounds()
         drawing.added.connect(self._on_changed)
         drawing.removed.connect(self._on_changed)
@@ -341,15 +344,21 @@ class VectorDrawingItem(ModelItem):
 
     # ---------------------------------------------------------- move preview
 
-    def set_move_preview(self, offsets: Mapping[Point, PointLike]) -> None:
-        """Show each point of `offsets` moved by its offset -- not moving it."""
+    @property
+    def grabbed(self) -> bool:
+        return self._grabbed
+
+    def set_move_preview(self, offsets: Mapping[Point, PointLike], grabbed: bool = False) -> None:
+        """Show each point of `offsets` moved by its offset -- not moving it
+        -- and, if it's a grab's move, the selection highlighted as such."""
         self.prepareGeometryChange()
         self._offsets = {point: np.asarray(offset, dtype=float) for point, offset in offsets.items()}
+        self._grabbed = grabbed
         self._bounds = self._compute_bounds()
         self.update()
 
     def clear_move_preview(self) -> None:
-        if self._offsets:
+        if self._offsets or self._grabbed:
             self.set_move_preview({})
 
     def _on_changed(self, _elements: frozenset[object]) -> None:
@@ -463,6 +472,7 @@ class VectorDrawingItem(ModelItem):
         if not selection or selection.mode == "objects":  # whole items: shown by object mode's own boxes
             return
         items = selection.elements
+        color = GRAB_COLOR if self._grabbed else SELECTION_COLOR
         painter.setBrush(Qt.BrushStyle.NoBrush)
         marked: list[Point] = []
         match selection.mode:
@@ -470,14 +480,14 @@ class VectorDrawingItem(ModelItem):
                 marked = [item for item in items if isinstance(item, Point)]
             case "lines":
                 lines = [item for item in items if isinstance(item, Line)]
-                painter.setPen(_cosmetic_pen(SELECTION_COLOR, LINE_WIDTH_PX + 3.0))
+                painter.setPen(_cosmetic_pen(color, LINE_WIDTH_PX + 3.0))
                 painter.drawPath(self._lines_path(lines))
                 marked = [point for line in lines for point in (line.start, line.end)]
             case "polygons":
                 lines = [line for item in items if isinstance(item, Polygon) for line in item.lines]
-                painter.setPen(_cosmetic_pen(SELECTION_COLOR, LINE_WIDTH_PX + 3.0))
+                painter.setPen(_cosmetic_pen(color, LINE_WIDTH_PX + 3.0))
                 painter.drawPath(self._lines_path(lines))
-        painter.setPen(_cosmetic_pen(SELECTION_COLOR, 2.5))
+        painter.setPen(_cosmetic_pen(color, 2.5))
         for point in marked:
             size = CONTROL_RADIUS_PX if is_control(self.drawing, point) else POINT_RADIUS_PX
             r = (size + SELECTION_MARKER_PAD_PX) / scale

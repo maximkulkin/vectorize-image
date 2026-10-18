@@ -10,14 +10,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QRectF, Qt  # noqa: E402
+from PySide6.QtGui import QCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from conftest import click, drag, key, move, press, release  # noqa: E402
-from vectorize_image.document import Line, Point, Polygon, VectorDrawing  # noqa: E402
+from vectorize_image.document import Element, Line, Point, Polygon, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
+from vectorize_image.edit import points_to_move  # noqa: E402
+from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import CursorGuides  # noqa: E402
+from vectorize_image.gui.tools import MoveTool  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (110.0, 40.0), (110.0, 110.0), (40.0, 110.0)]
@@ -56,6 +60,30 @@ def _key(window: MainWindow, which: Qt.Key) -> None:
     QTest.qWaitForWindowActive(window)
     QTest.keyClick(window, which)
     QApplication.processEvents()
+
+
+def _grab(window: MainWindow, x: float, y: float) -> None:
+    """G, with the cursor at (x, y) on the canvas."""
+    move(window, x, y)
+    canvas = window.canvas
+    QCursor.setPos(canvas.viewport().mapToGlobal(canvas.mapFromScene(x, y)))
+    _key(window, Qt.Key.Key_G)
+
+
+def _move_tool(window: MainWindow) -> MoveTool[Element]:
+    return window.edit_tool.move_tool
+
+
+def _drawing_item(window: MainWindow, drawing: VectorDrawing) -> VectorDrawingItem:
+    item = window.canvas.document_item.item_for(drawing)
+    assert item is not None
+    return item
+
+
+def _shown_at(window: MainWindow, drawing: VectorDrawing, point: Point) -> np.ndarray:
+    """Where the canvas shows `point`, move preview included."""
+    line = next(line for line in drawing.lines if point in (line.start, line.end))
+    return _drawing_item(window, drawing).bezier(line)[0 if line.start is point else 3]
 
 
 def _line_between(drawing: VectorDrawing, a: tuple[float, float], b: tuple[float, float]) -> Line:
@@ -258,7 +286,7 @@ def test_undo_mid_drag_abandons_the_drag(window: MainWindow, diamond_path: str) 
     release(window, 30, 35)
 
     assert np.allclose(drawing.position(corner), CORNERS[0])
-    assert not window.edit_tool.move_tool.dragging
+    assert not window.edit_tool.tweak_tool.dragging
 
 
 def test_tweak_drags_what_it_presses_on(window: MainWindow, diamond_path: str) -> None:
@@ -294,8 +322,9 @@ def test_move_drags_the_selection_from_anywhere(window: MainWindow, diamond_path
     drawing, _ = _edit_square(window, diamond_path)
     click(window, *CORNERS[0])
     corner = _point_at(drawing, CORNERS[0])
-    _key(window, Qt.Key.Key_G)
+    window.move_tool_action.trigger()  # the toolbar button: no grab, unlike G
     assert window.tool is window.edit_tool and window.edit_tool.select_tool is window.edit_tool.move_tool
+    assert not _move_tool(window).grabbing
 
     drag(window, (75, 75), (85, 80))  # not on the point: it moves all the same
 
@@ -305,6 +334,101 @@ def test_move_drags_the_selection_from_anywhere(window: MainWindow, diamond_path
     drag(window, CORNERS[1], (CORNERS[1][0] + 5, CORNERS[1][1]))  # an unselected point: selected, then moved alone
     assert window.document.selection.items == {_point_at(drawing, (CORNERS[1][0] + 5, CORNERS[1][1]))}
     assert np.allclose(drawing.position(corner), (CORNERS[0][0] + 10, CORNERS[0][1] + 5), atol=TOLERANCE)
+
+
+def test_g_grabs_the_selection_to_move_with_the_cursor_until_a_click(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    window.box_select_action.trigger()
+    drag(window, (30, 30), (50, 50))
+    corner = _point_at(drawing, CORNERS[0])
+    assert window.document.selection.items == {corner}
+
+    _grab(window, 75, 75)
+    tool = _move_tool(window)
+    assert window.move_tool_action.isChecked() and window.edit_tool.select_tool is tool
+    assert tool.grabbing and _drawing_item(window, drawing).grabbed  # highlighted as what's moving
+    assert "click to place" in window.statusBar().currentMessage()
+
+    move(window, 85, 80)  # no button held: it moves all the same, as a preview
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+    assert np.allclose(_shown_at(window, drawing, corner), (50, 45), atol=TOLERANCE)
+
+    click(window, 90, 80)  # placed where it's clicked; the release that follows does nothing more
+    assert np.allclose(drawing.position(corner), (55, 45), atol=TOLERANCE)
+    assert not tool.grabbing and not _drawing_item(window, drawing).grabbed
+    assert window.document.selection.items == {corner}
+    assert window.document.history.undo_text() == "Move Points"
+    assert "click to place" not in window.statusBar().currentMessage()
+
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+
+
+def test_escape_cancels_a_grab(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    corner = _point_at(drawing, CORNERS[0])
+    _grab(window, 75, 75)
+    move(window, 95, 60)
+    key(window, Qt.Key.Key_Y)
+
+    key(window, Qt.Key.Key_Escape)
+    assert _move_tool(window).axis_guide.axis is None
+
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+    assert np.allclose(_shown_at(window, drawing, corner), CORNERS[0])
+    assert not _move_tool(window).grabbing and not _drawing_item(window, drawing).grabbed
+    assert window.document.selection.items == {corner}
+    assert not window.document.history.can_undo()
+
+    move(window, 100, 100)  # no longer moving with the cursor
+    assert np.allclose(_shown_at(window, drawing, corner), CORNERS[0])
+
+
+def test_x_and_y_keep_a_grab_to_one_axis(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    corner = _point_at(drawing, CORNERS[0])
+    tool, guide = _move_tool(window), _move_tool(window).axis_guide
+    # The middle of what moves: the corner, and the control points it carries along.
+    moving = np.array([drawing.position(point) for point in points_to_move(drawing, {corner})])
+    middle = (moving.min(axis=0) + moving.max(axis=0)) / 2
+    _grab(window, 75, 75)
+    assert guide.axis is None
+
+    key(window, Qt.Key.Key_X)
+    move(window, 85, 80)
+    assert tool.axis == "x" and "along X" in window.statusBar().currentMessage()
+    assert np.allclose(_shown_at(window, drawing, corner), (50, 40), atol=TOLERANCE)
+    assert guide.axis == "x" and guide.pos().y() == pytest.approx(middle[1])  # horizontal, through the middle
+
+    key(window, Qt.Key.Key_X)  # again: free, at once
+    assert tool.axis is None and guide.axis is None
+    assert np.allclose(_shown_at(window, drawing, corner), (50, 45), atol=TOLERANCE)
+
+    key(window, Qt.Key.Key_Y)
+    assert tool.axis == "y"
+    assert np.allclose(_shown_at(window, drawing, corner), (40, 45), atol=TOLERANCE)
+    assert guide.axis == "y" and guide.pos().x() == pytest.approx(middle[0])  # vertical, through the middle
+
+    key(window, Qt.Key.Key_X)  # the other one: switches to it
+    assert tool.axis == "x" and guide.axis == "x"
+
+    click(window, 85, 80)
+    assert np.allclose(drawing.position(corner), (50, 40), atol=TOLERANCE)
+    assert tool.axis is None and guide.axis is None
+
+
+def test_g_with_nothing_selected_just_switches_to_move(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    _grab(window, 75, 75)
+    tool = _move_tool(window)
+    assert window.edit_tool.select_tool is tool and not tool.grabbing
+
+    key(window, Qt.Key.Key_X)  # not grabbing: X does nothing
+    assert tool.axis is None
+    move(window, 85, 80)
+    assert not _drawing_item(window, drawing).grabbed
 
 
 def test_dragging_a_group_moves_all_of_it(window: MainWindow, diamond_path: str) -> None:

@@ -1,7 +1,7 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
 curve and snap ring, the Edit tool's hover/drag highlights, the box,
-guides and brush of the area select tools, and object mode's boxes around
-items. Built from stock Qt graphics items so their
+guides and brush of the area select tools, object mode's boxes around
+items, and a grab's axis guide. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
 cosmetic pens, or ignores the view transform entirely, so it keeps a fixed
 on-screen size at any zoom.
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..document import Element, Line, Point, Polygon, VectorDrawing
-from ..typedefs import Bezier, PointLike
+from ..typedefs import Axis, Bezier, PointLike
 from .document_items import LINE_WIDTH_PX, bezier_path
 
 PREVIEW_COLOR = QColor(255, 214, 0)
@@ -34,9 +34,11 @@ SNAP_HIGHLIGHT_COLOR = QColor(0, 229, 255)
 HOVER_COLOR = SNAP_HIGHLIGHT_COLOR
 AREA_SELECT_COLOR = QColor(33, 150, 243)
 GUIDE_BACKING_COLOR = QColor(255, 255, 255, 200)  # under the guides' dashes, to show on dark areas too
+AXIS_COLORS: dict[Axis, QColor] = {"x": QColor(255, 82, 82), "y": QColor(118, 255, 3)}  # as in Blender
 
 SNAP_HIGHLIGHT_RADIUS_PX = 9.0
 HANDLE_HIGHLIGHT_RADIUS_PX = 7.0
+AXIS_GUIDE_REACH_PX = 1e6  # each way: across the view, wherever it's panned
 
 
 def cosmetic_pen(color: QColor, width: float, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
@@ -175,6 +177,52 @@ class CursorGuides(QGraphicsPathItem):
         painter.restore()
 
 
+class AxisGuide(QGraphicsPathItem):
+    """A grab's axis constraint: a line along the axis -- horizontal for
+    X, vertical for Y -- through the middle of what's moving. Drawn in
+    screen space, one crisp pixel wide, and long enough to cross the view
+    at any zoom."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+        self._axis: Axis | None = None
+        self.hide()
+
+    @property
+    def axis(self) -> Axis | None:
+        """The axis shown, or None while hidden."""
+        return self._axis if self.isVisible() else None
+
+    def show_axis(self, axis: Axis | None, through: PointLike) -> None:
+        """A line along `axis` through `through` -- or nothing, for None."""
+        if axis is None:
+            self.hide()
+            return
+        if axis != self._axis:
+            self._axis = axis
+            reach = AXIS_GUIDE_REACH_PX
+            path = QPainterPath()
+            if axis == "x":
+                path.moveTo(-reach, 0.0)
+                path.lineTo(reach, 0.0)
+            else:
+                path.moveTo(0.0, -reach)
+                path.lineTo(0.0, reach)
+            self.setPath(path)
+            # Not cosmetic, as for CursorGuides: one logical pixel wide.
+            self.setPen(QPen(AXIS_COLORS[axis], 1.0))
+        self.setPos(_point(through))
+        self.show()
+
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.strokePath(self.path(), self.pen())
+        painter.restore()
+
+
 class ItemBoxes(QGraphicsPathItem):
     """Object mode's highlight of whole items: a box around each."""
 
@@ -183,6 +231,10 @@ class ItemBoxes(QGraphicsPathItem):
         self.setPen(cosmetic_pen(color, width))
         self.setBrush(Qt.BrushStyle.NoBrush)
         self.hide()
+
+    def set_color(self, color: QColor) -> None:
+        if self.pen().color() != color:
+            self.setPen(cosmetic_pen(color, self.pen().widthF()))
 
     def show_boxes(self, boxes: Iterable[tuple[PointLike, PointLike]], pad: float) -> None:
         """A box from each (top-left, bottom-right) pair, grown by `pad` on

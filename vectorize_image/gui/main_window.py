@@ -8,8 +8,10 @@ vector drawing, in a new layer above the current one. Pen and Edit work
 on the current layer's drawing. The select tools -- Tweak (which also drags), Box and Paint --
 and Move work in either mode: object mode, where they select and move whole drawings and
 images of the current layer, or edit mode, where they select and move the current drawing's
-points, lines or polygons. Edit Mode toggles on and off -- Tab,
-as in Blender, goes into it and back out to object mode.
+points, lines or polygons. G, as in Blender, grabs the selection in
+either mode: it moves with the cursor until a click places it. Edit Mode
+toggles on and off -- Tab, as in Blender too, goes into it and back out to
+object mode.
 
 The document is the source of truth: the canvas and the Layers panel show
 it, every change to it goes through its undo history, and Save exports
@@ -119,6 +121,7 @@ class MainWindow(QMainWindow):
     box_select_action: QAction
     paint_select_action: QAction
     move_tool_action: QAction
+    grab_action: QAction
     _select_tool_actions: tuple[QAction, ...]
     select_tool_button: QToolButton
     _selection_toolbar_separator: QAction
@@ -304,8 +307,19 @@ class MainWindow(QMainWindow):
         self.addActions(list(self._select_tool_actions))
         self.move_tool_action = QAction(themed_icon("move"), "&Move", self)
         self.move_tool_action.setCheckable(True)
-        self.move_tool_action.setShortcut(QKeySequence(Qt.Key.Key_G))
-        self.move_tool_action.setToolTip("Move (G): drag anywhere to move the selection, or drag something unselected to move it")
+        self.move_tool_action.setToolTip(
+            (
+                "Move (G): drag anywhere to move the selection, or drag something unselected to move it; "
+                "G also grabs the selection to move it with the cursor -- click to place it, "
+                "X or Y to keep to one axis, Esc to cancel"
+            )
+        )
+        # G: not Move's shortcut, which would only switch to it, but Move
+        # and a grab of the selection at once.
+        self.grab_action = QAction("&Grab", self)
+        self.grab_action.setShortcut(QKeySequence(Qt.Key.Key_G))
+        self.grab_action.triggered.connect(self._grab)
+        self.addAction(self.grab_action)
         self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
         self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge, in the current layer")
@@ -729,6 +743,13 @@ class MainWindow(QMainWindow):
         self.edit_tool.set_select_tool(name)
         self._update_tool()
         self._update_paint_radius_visibility()
+
+    def _grab(self) -> None:
+        """Switch to Move, and grab the selection with it from where the
+        cursor is (see MoveTool.start_grab)."""
+        self.move_tool_action.setChecked(True)
+        self.canvas.setFocus()  # for the keys a grab takes: X, Y and Esc
+        self.tool.start_grab(self.canvas.cursor_scene_pos())
 
     def _update_paint_radius_visibility(self) -> None:
         self.paint_radius_widget.setVisible(self.paint_select_action.isChecked())

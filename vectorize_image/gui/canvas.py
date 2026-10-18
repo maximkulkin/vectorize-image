@@ -21,7 +21,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Final
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QWidget
 
 from ..document import Document, Item, Point, VectorDrawing
@@ -68,12 +69,13 @@ class Canvas(ZoomableGraphicsView):
 
     # ------------------------------------------------------- move preview
 
-    def preview_move(self, drawing: VectorDrawing, offsets: Mapping[Point, PointLike]) -> None:
+    def preview_move(self, drawing: VectorDrawing, offsets: Mapping[Point, PointLike], grabbed: bool = False) -> None:
         """Show each point of `drawing` in `offsets` moved by its offset,
-        without moving it."""
+        without moving it -- with `grabbed`, as a grab's move, its
+        selection highlighted as what's moving."""
         item = self.document_item.item_for(drawing)
         if item is not None:
-            item.set_move_preview(offsets)
+            item.set_move_preview(offsets, grabbed)
 
     def end_move_preview(self, drawing: VectorDrawing) -> None:
         item = self.document_item.item_for(drawing)
@@ -106,6 +108,11 @@ class Canvas(ZoomableGraphicsView):
     def scene_distance(self, px: float) -> float:
         """An on-screen distance in pixels, in scene units at the current zoom."""
         return px / (self.transform().m11() or 1.0)
+
+    def cursor_scene_pos(self) -> QPointF:
+        """Where the mouse cursor is, in scene coordinates -- wherever it is,
+        in the view or not."""
+        return self.mapToScene(self.viewport().mapFromGlobal(QCursor.pos()))
 
     def view_size(self) -> tuple[float, float]:
         """The view's on-screen (width, height) in pixels."""

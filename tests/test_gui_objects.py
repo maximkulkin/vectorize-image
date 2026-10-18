@@ -11,13 +11,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QToolBar  # noqa: E402
 
 from conftest import click, drag, key, move, press, release  # noqa: E402
 from vectorize_image.document import Layer, RasterImage, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
+from vectorize_image.gui.document_items import GRAB_COLOR  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
+from vectorize_image.gui.overlays import ACTIVE_COLOR  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (70.0, 40.0), (70.0, 70.0), (40.0, 70.0)]
@@ -299,7 +302,7 @@ def test_moving_drags_the_selection_as_one_undo_step(window: MainWindow, diamond
     before, other_before = _positions(drawing), _positions(other)
     click(window, 55, 55)
     click(window, 115, 115, shift=True)
-    _shortcut(window, Qt.Key.Key_G)
+    window.move_tool_action.trigger()  # the toolbar button: no grab, unlike G
     assert window.tool is window.object_tool and window.object_tool.select_tool is window.object_tool.move_tool
 
     drag(window, (-10, 75), (10, 85))  # anywhere, even off everything: moves the whole selection
@@ -313,6 +316,65 @@ def test_moving_drags_the_selection_as_one_undo_step(window: MainWindow, diamond
     window.undo_action.trigger()
     assert np.allclose(_positions(drawing), before)
     assert np.allclose(_positions(other), other_before)
+
+
+def _grab(window: MainWindow, x: float, y: float) -> None:
+    """G, with the cursor at (x, y) on the canvas."""
+    move(window, x, y)
+    canvas = window.canvas
+    QCursor.setPos(canvas.viewport().mapToGlobal(canvas.mapFromScene(x, y)))
+    _shortcut(window, Qt.Key.Key_G)
+
+
+def test_g_grabs_the_selected_objects_until_a_click(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    other = _add_square(window, 100)
+    before, other_before = _positions(drawing), _positions(other)
+    view = window.canvas.document_item.view_of(drawing)
+    assert view is not None
+    click(window, 55, 55)
+    click(window, 115, 115, shift=True)
+
+    _grab(window, 90, 90)
+    tool = window.object_tool.move_tool
+    assert window.object_tool.select_tool is tool and tool.grabbing
+    assert window.object_tool.selected_boxes.pen().color() == GRAB_COLOR
+
+    move(window, 100, 95)  # no button held: previewed moving with the cursor
+    assert np.allclose(_positions(drawing), before)
+    assert (view.pos().x(), view.pos().y()) == pytest.approx((10, 5), abs=TOLERANCE)
+
+    key(window, Qt.Key.Key_Y)  # just vertically
+    assert (view.pos().x(), view.pos().y()) == pytest.approx((0, 5), abs=TOLERANCE)
+    # A vertical line through the middle of both: the squares span 40 to 130.
+    assert tool.axis_guide.axis == "y" and tool.axis_guide.pos().x() == pytest.approx(85)
+
+    click(window, 100, 100)
+    assert not tool.grabbing and window.object_tool.selected_boxes.pen().color() == ACTIVE_COLOR
+    assert tool.axis_guide.axis is None
+    assert np.allclose(_positions(drawing) - before, (0, 10), atol=TOLERANCE)
+    assert np.allclose(_positions(other) - other_before, _positions(drawing) - before)
+    assert window.document.history.undo_text() == "Move Objects"
+
+
+def test_escape_cancels_a_grab_of_objects(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    before = _positions(drawing)
+    view = window.canvas.document_item.view_of(drawing)
+    assert view is not None
+    click(window, 55, 55)
+    _grab(window, 90, 90)
+    move(window, 110, 100)
+
+    key(window, Qt.Key.Key_Escape)
+
+    tool = window.object_tool.move_tool
+    assert not tool.grabbing
+    assert (view.pos().x(), view.pos().y()) == (0.0, 0.0)
+    assert window.object_tool.selected_boxes.pen().color() == ACTIVE_COLOR
+    assert np.allclose(_positions(drawing), before)
+    assert not window.document.history.can_undo()
+    assert window.document.selection.items == {drawing}
 
 
 def test_a_drag_is_previewed_without_moving_anything(window: MainWindow, diamond_path: str) -> None:

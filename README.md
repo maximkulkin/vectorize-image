@@ -149,6 +149,14 @@ Three more pick *how* a click or drag builds the selection:
   touches as you sweep it around. Without Shift, a new stroke starts from
   an empty selection; with Shift, it adds to it.
 
+**G** grabs the selection, as in Blender — whole drawings and images in
+object mode too. It switches to Move, and what's selected (highlighted in
+white) moves with the cursor straight away, no button held: **click** to
+place it there, as one undo step, or **Esc** to put it back. While it's
+moving, **X** or **Y** keeps it to that axis — shown by a line along it
+(red for X, green for Y) through the middle of what's moving; pressing the
+same key again frees it. (Clicking the Move button on the toolbar only switches tools.)
+
 **Esc** cancels whatever's in progress (a move drag snaps back, a box is
 abandoned, a paint stroke reverts), or else clears the selection.
 
