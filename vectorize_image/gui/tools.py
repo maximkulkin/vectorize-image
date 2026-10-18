@@ -44,6 +44,7 @@ from ..document import (
     Line,
     MoveItems,
     Point,
+    RasterImage,
     Remove,
     Selectable,
     Selection,
@@ -672,17 +673,30 @@ class ElementTarget(MoveTarget[Element]):
 
 
 class ItemTarget(MoveTarget[Item]):
-    """Object mode's: whole drawings and images of the current layer."""
+    """Object mode's: whole drawings and images of the current layer. A
+    hovered drawing is highlighted along its lines, as edit mode does a
+    hovered line; a hovered image, by a box around it."""
 
     selected_hint: ClassVar[str] = "Tab to edit the current layer"
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas)
+        self._hover_highlight: HitHighlight = HitHighlight(HOVER_COLOR, 2.0)
         self._hover_box: ItemBoxes = ItemBoxes(HOVER_COLOR, 1.0)
+
+    @property
+    def hover_highlight(self) -> HitHighlight:
+        """The highlight of a hovered drawing -- for inspection (e.g. by tests)."""
+        return self._hover_highlight
+
+    @property
+    def hover_box(self) -> ItemBoxes:
+        """The box around a hovered image -- for inspection (e.g. by tests)."""
+        return self._hover_box
 
     @override
     def overlays(self) -> tuple[QGraphicsItem, ...]:
-        return (self._hover_box,)
+        return (*self._hover_highlight.items(), self._hover_box)
 
     @override
     def hit(self, pos: tuple[float, float]) -> Item | None:
@@ -694,8 +708,9 @@ class ItemTarget(MoveTarget[Item]):
     @override
     def show_hover(self, target: Item | None) -> None:
         layer = self.selection.layer
-        shown = target is not None and layer is not None and target in layer.items
-        boxes = [item_bounds(target)] if shown and target is not None else []
+        shown = target if layer is not None and target in layer.items else None
+        self._hover_highlight.show_drawing(shown if isinstance(shown, VectorDrawing) else None)
+        boxes = [item_bounds(shown)] if isinstance(shown, RasterImage) else []
         self._hover_box.show_boxes(boxes, self.canvas.scene_distance(ITEM_BOX_PAD_PX))
 
     @override

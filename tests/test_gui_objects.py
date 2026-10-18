@@ -24,6 +24,7 @@ from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.gui.document_items import GRAB_COLOR, RasterImageItem, VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import ACTIVE_COLOR  # noqa: E402
+from vectorize_image.gui.tools import ItemTarget  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (70.0, 40.0), (70.0, 70.0), (40.0, 70.0)]
@@ -399,6 +400,25 @@ def test_selected_drawings_show_it_themselves_and_images_by_a_box(window: MainWi
 
     _shortcut(window, Qt.Key.Key_Tab)  # edit mode: no object mode decorations
     assert not view.view.object_mode
+
+
+def test_hovering_highlights_a_drawings_lines_and_an_image_by_a_box(window: MainWindow, diamond_path: str) -> None:
+    image, _ = _open_with_square(window, diamond_path)
+    target = window.object_tool.tweak_tool.target
+    assert isinstance(target, ItemTarget)
+    stroke, box = target.hover_highlight.stroke, target.hover_box
+
+    move(window, 55, 55)
+    assert stroke.isVisible() and not box.isVisible()
+    assert stroke.path().boundingRect().contains(40, 40) and stroke.path().boundingRect().contains(70, 70)
+
+    move(window, 120, 120)  # nothing of the current layer there
+    assert not stroke.isVisible() and not box.isVisible()
+
+    window.document.current_layer = _layer(window, "Image")
+    window.document.selection.set_items({image})
+    move(window, 121, 121)
+    assert box.isVisible() and not stroke.isVisible()
 
 
 def test_a_drag_is_previewed_without_moving_anything(window: MainWindow, diamond_path: str) -> None:

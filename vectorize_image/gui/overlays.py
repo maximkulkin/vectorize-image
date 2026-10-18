@@ -1,7 +1,7 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
 curve and snap ring, the Edit tool's hover/drag highlights and the point Add Point would add, the box,
-guides and brush of the area select tools, object mode's boxes around
-items, and a grab's axis guide. Built from stock Qt graphics items so their
+guides and brush of the area select tools, object mode's hover highlight
+and boxes around images, and a grab's axis guide. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
 cosmetic pens, or ignores the view transform entirely, so it keeps a fixed
 on-screen size at any zoom.
@@ -96,8 +96,9 @@ class CurvePreview(QGraphicsPathItem):
 class HitHighlight:
     """Highlights one element of a vector drawing (what the Edit tool's
     hit test finds): a ring around a point, or a thick stroke along a line
-    or a polygon's outline. Not an item itself -- it switches between two,
-    see `items`."""
+    or a polygon's outline -- or, for object mode, along every line of a
+    whole drawing. Not an item itself -- it switches between two, see
+    `items`."""
 
     def __init__(self, color: QColor, ring_width: float) -> None:
         self.ring: MarkerRing = MarkerRing(HANDLE_HIGHLIGHT_RADIUS_PX, color, ring_width)
@@ -124,6 +125,16 @@ class HitHighlight:
                 lines = [target]
             case Polygon():
                 lines = list(target.lines)
+        self._show_lines(drawing, lines, offset)
+
+    def show_drawing(self, drawing: VectorDrawing | None) -> None:
+        """Highlight every line of `drawing` -- or nothing, if it's None."""
+        self.ring.hide()
+        self.stroke.hide()
+        if drawing is not None:
+            self._show_lines(drawing, drawing.lines, np.zeros(2))
+
+    def _show_lines(self, drawing: VectorDrawing, lines: Iterable[Line], offset: np.ndarray) -> None:
         path = QPainterPath()
         for line in lines:
             path.addPath(bezier_path([drawing.bezier(line)], closed=False))
