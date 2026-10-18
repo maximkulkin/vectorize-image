@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from vectorize_image.document import Layer, VectorDrawing  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 
 
@@ -31,6 +32,18 @@ def wait_until(predicate: Callable[[], object], timeout: float = 10.0) -> None:
         QApplication.processEvents()
         time.sleep(0.01)
     assert predicate(), "condition not met before timeout"
+
+
+def open_image(window: MainWindow, path: str) -> VectorDrawing:
+    """Open an image, and above it a current "Drawing" layer with an empty
+    drawing in it -- with the history left empty, as a fresh start to test
+    from."""
+    window.load_image(path)
+    drawing = VectorDrawing()
+    window.document.layers.append(layer := Layer("Drawing", [drawing]))
+    window.document.current_layer = layer
+    window.document.history.clear()
+    return drawing
 
 
 # ------------------------------------------------- canvas input, by scene position

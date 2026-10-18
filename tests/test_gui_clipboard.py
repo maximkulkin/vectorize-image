@@ -13,7 +13,7 @@ from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu  # noqa: E402
 
-from conftest import click  # noqa: E402
+from conftest import click, open_image  # noqa: E402
 from vectorize_image.document import Layer, Polygon, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
@@ -29,7 +29,7 @@ def _straight(p0: tuple[float, float], p3: tuple[float, float]) -> Bezier:
 
 def _open_with_square(window: MainWindow, image_path: str) -> VectorDrawing:
     """The image, and in the "Drawing" layer, a drawing of one square polygon."""
-    window.load_image(image_path)
+    open_image(window, image_path)
     drawing = window.document.current_drawing
     assert drawing is not None
     contour = [_straight(CORNERS[i], CORNERS[(i + 1) % 4]) for i in range(4)]

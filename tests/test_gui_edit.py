@@ -14,7 +14,7 @@ from PySide6.QtGui import QCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGraphicsItem  # noqa: E402
 
-from conftest import click, drag, key, move, press, release  # noqa: E402
+from conftest import click, drag, key, move, press, release, open_image  # noqa: E402
 from vectorize_image.document import Element, Line, Point, Polygon, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.edit import points_to_move  # noqa: E402
@@ -35,7 +35,7 @@ def _straight(p0: tuple[float, float], p3: tuple[float, float]) -> Bezier:
 def _edit_square(window: MainWindow, image_path: str) -> tuple[VectorDrawing, Polygon]:
     """A square polygon of curves in the current layer's drawing, with the
     Edit tool active."""
-    window.load_image(image_path)
+    open_image(window, image_path)
     drawing = window.document.current_drawing
     assert drawing is not None
     contour = [_straight(CORNERS[i], CORNERS[(i + 1) % 4]) for i in range(4)]

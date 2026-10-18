@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from conftest import click, key, move  # noqa: E402
+from conftest import click, key, move, open_image  # noqa: E402
 from vectorize_image.document import Layer, Point, VectorDrawing  # noqa: E402
 from vectorize_image.document.hit_test import sample  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
@@ -22,7 +22,7 @@ DIAMOND_CORNERS = [(75.0, 10.0), (140.0, 75.0), (75.0, 140.0), (10.0, 75.0)]
 
 
 def _pen(window: MainWindow, image_path: str) -> VectorDrawing:
-    window.load_image(image_path)
+    open_image(window, image_path)
     window.trace_tool_action.setChecked(True)
     drawing = window.document.current_drawing
     assert drawing is not None
@@ -187,14 +187,13 @@ def test_saving_exports_what_was_drawn(window: MainWindow, diamond_path: str, tm
     assert out_path.read_text(encoding="utf-8").count("<path") == 1
 
 
-def test_loading_a_new_image_starts_over(window: MainWindow, diamond_path: str, donut_path: str) -> None:
+def test_pen_snaps_to_the_last_opened_image(window: MainWindow, diamond_path: str, donut_path: str) -> None:
     _pen(window, diamond_path)
-    _trace(window, DIAMOND_CORNERS)
+    assert len(window.trace_tool.edges.contours) == 1
 
     window.load_image(donut_path)
 
-    assert window.document.current_drawing is not None and not window.document.current_drawing
-    assert not window.undo_action.isEnabled()
+    assert len(window.trace_tool.edges.contours) == 2  # the donut's outside and its hole
 
 
 def test_pen_without_an_image_still_draws(window: MainWindow) -> None:

@@ -15,7 +15,7 @@ from PySide6.QtGui import QFocusEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QListWidget, QMenu, QMessageBox, QToolBar  # noqa: E402
 
-from conftest import click  # noqa: E402
+from conftest import click, open_image  # noqa: E402
 from vectorize_image.document import Document, Layer, VectorDrawing  # noqa: E402
 from vectorize_image.gui.document_items import LayerItem  # noqa: E402
 from vectorize_image.gui.layers_panel import BORDERLESS_BUTTON_STYLE, LayerRow, LayersPanel  # noqa: E402
@@ -226,7 +226,7 @@ def test_the_panel_is_a_dock_toggled_from_the_view_menu(window: MainWindow) -> N
 
 
 def test_window_panel_shows_the_loaded_layers(window: MainWindow, diamond_path: str) -> None:
-    window.load_image(diamond_path)
+    open_image(window, diamond_path)
     assert [name for name, *_ in _rows(window.layers_panel)] == ["Drawing", "Image"]
     assert window.layers_panel.list.currentRow() == 0
 
@@ -236,7 +236,7 @@ def test_window_panel_shows_the_loaded_layers(window: MainWindow, diamond_path: 
 
 
 def test_layer_opacity_reaches_the_canvas(window: MainWindow, diamond_path: str) -> None:
-    window.load_image(diamond_path)
+    open_image(window, diamond_path)
     _row(window.layers_panel, "Image").opacity_slider.setValue(40)
     (item,) = (
         child for child in window.canvas.document_item.children_in_order
@@ -292,7 +292,7 @@ def test_deleting_the_last_layer_leaves_an_empty_list(panel: LayersPanel) -> Non
 
 
 def test_drawing_edits_in_a_deleted_layer_come_back_with_it(window: MainWindow, diamond_path: str) -> None:
-    window.load_image(diamond_path)
+    open_image(window, diamond_path)
     drawing = window.document.current_drawing
     assert drawing is not None
     window.trace_tool_action.setChecked(True)
@@ -312,7 +312,7 @@ def test_drawing_edits_in_a_deleted_layer_come_back_with_it(window: MainWindow, 
 
 
 def test_undo_and_redo_name_the_layer_change(window: MainWindow, diamond_path: str) -> None:
-    window.load_image(diamond_path)
+    open_image(window, diamond_path)
     assert (window.undo_action.text(), window.redo_action.text()) == ("&Undo", "&Redo")
 
     window.layers_panel.new_layer_button.click()
@@ -403,7 +403,7 @@ def test_an_empty_or_unchanged_name_renames_nothing(panel: LayersPanel) -> None:
 
 
 def test_typing_a_name_in_the_window_does_not_trigger_shortcuts(window: MainWindow, diamond_path: str) -> None:
-    window.load_image(diamond_path)
+    open_image(window, diamond_path)
     window.edit_tool_action.setChecked(True)  # where 1/2/3 and Backspace are shortcuts
     row = _start_renaming(window.layers_panel, "Drawing")
 
@@ -423,7 +423,7 @@ SQUARE_SVG = (
 
 
 def test_import_svg_adds_its_shapes_in_a_new_layer(window: MainWindow, diamond_path: str, tmp_path: Path) -> None:
-    window.load_image(diamond_path)
+    open_image(window, diamond_path)
     image_layer, drawing_layer = window.document.layers
     window.document.current_layer = image_layer
     svg_path = tmp_path / "shapes.svg"

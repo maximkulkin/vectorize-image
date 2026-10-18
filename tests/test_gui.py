@@ -16,6 +16,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGraphicsView  # noqa: E402
 
+from conftest import open_image  # noqa: E402
 from vectorize_image import svgwrite  # noqa: E402
 from vectorize_image.document import Insert, RasterImage, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
@@ -72,19 +73,22 @@ def test_starts_in_object_mode_with_nothing_open(window: MainWindow) -> None:
     assert window.tweak_action.isChecked()
 
 
-def test_loading_an_image_builds_image_and_drawing_layers(window: MainWindow, donut_path: str) -> None:
+def test_loading_an_image_adds_an_image_layer(window: MainWindow, donut_path: str) -> None:
     window.load_image(donut_path)
 
-    image_layer, drawing_layer = window.document.layers
-    assert (image_layer.name, drawing_layer.name) == ("Image", "Drawing")
+    (image_layer,) = window.document.layers
+    assert image_layer.name == "Image"
     (image,) = image_layer.items
     assert isinstance(image, RasterImage) and image is window.image
     assert image.size == (100, 100)
-    assert window.document.current_layer is drawing_layer
-    assert not _drawing(window)
+    assert window.document.current_layer is image_layer
+    assert window.document.current_drawing is None
     assert window.canvas.sceneRect() == QRectF(0, 0, 100, 100)
-    assert not window.document.history.can_undo()
+    assert window.undo_action.text() == "&Undo Open image"
     assert not window.export_svg_action.isEnabled()
+
+    window.undo_action.trigger()
+    assert not window.document.layers
 
 
 def test_loading_an_image_traces_its_edges_for_the_pen(window: MainWindow, donut_path: str) -> None:
@@ -111,17 +115,21 @@ def test_failed_load_leaves_the_document_alone(
     assert list(window.document.layers) == layers
 
 
-def test_loading_a_new_image_starts_over(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
-    window.load_image(donut_path)
+def test_loading_another_image_keeps_the_document(window: MainWindow, donut_path: str, tmp_path: Path) -> None:
+    open_image(window, donut_path)
     _add_square(window)
-    old_item = _drawing_item(window)
+    drawing, drawing_item = _drawing(window), _drawing_item(window)
+    old_layers = list(window.document.layers)
 
     window.load_image(_square_path(tmp_path))
 
-    assert not shiboken6.isValid(old_item)
-    assert not _drawing(window)
+    layers = window.document.layers
+    assert list(layers[:2]) == old_layers and layers[2].name == "Image"
+    assert window.document.current_layer is layers[2]
     assert window.image is not None and window.image.size == (50, 50)
-    assert not window.export_svg_action.isEnabled() and not window.undo_action.isEnabled()
+    assert window.document.items(RasterImage)[-1] is window.image
+    assert shiboken6.isValid(drawing_item) and len(drawing.polygons) == 1
+    assert window.export_svg_action.isEnabled()
 
 
 # ---------------------------------------------------------------- export
@@ -136,7 +144,7 @@ def _export_to(window: MainWindow, out_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_export_svg_writes_the_document(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     _add_square(window)
     assert window.export_svg_action.isEnabled()
     out_path = tmp_path / "out.svg"
@@ -168,7 +176,7 @@ def test_export_svg_without_an_image(window: MainWindow, tmp_path: Path, monkeyp
 
 
 def test_export_svg_leaves_out_hidden_layers(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     _add_square(window)
     window.document.layers[1].visible = False  # the only drawing: nothing left to export
     assert not window.export_svg_action.isEnabled()
@@ -212,7 +220,7 @@ def test_wheel_zoom_anchors_on_the_cursor_point(window: MainWindow, donut_path: 
     wheel-zoom -- a few pixels of drift is inherent to QGraphicsView's
     integer scrollbars, but it must not be a large, visible jump.
     """
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     view = window.canvas
 
     # Establish real scrollable range first: right after fit-to-window the
@@ -230,7 +238,7 @@ def test_wheel_zoom_anchors_on_the_cursor_point(window: MainWindow, donut_path: 
 
 
 def test_keyboard_zoom_anchors_on_the_view_center(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     view = window.canvas
 
     for _ in range(6):
@@ -250,7 +258,7 @@ def test_keyboard_zoom_anchors_on_the_view_center(window: MainWindow, donut_path
 
 
 def test_zoom_clamps_to_min_and_max_scale(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     view = window.canvas
 
     for _ in range(60):
@@ -263,7 +271,7 @@ def test_zoom_clamps_to_min_and_max_scale(window: MainWindow, donut_path: str) -
 
 
 def test_arrow_keys_pan_the_view(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     view = window.canvas
 
     for _ in range(6):  # need real scrollable range for panning to move anything
@@ -313,7 +321,7 @@ def _middle_release(view: QGraphicsView, pos: QPoint) -> None:
 def test_middle_drag_pans_the_view(window: MainWindow, donut_path: str) -> None:
     """The content follows the cursor: the scene point grabbed at press-time
     stays under the cursor throughout the drag."""
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     view = window.canvas
 
     for _ in range(6):  # need real scrollable range for panning to move anything
@@ -337,7 +345,7 @@ def test_middle_drag_pans_the_view(window: MainWindow, donut_path: str) -> None:
 
 
 def test_middle_drag_blocks_zoom_until_released(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     view = window.canvas
     scale = view.transform().m11()
     pos = QPoint(300, 250)
@@ -354,7 +362,7 @@ def test_middle_drag_blocks_zoom_until_released(window: MainWindow, donut_path: 
 
 
 def test_middle_drag_shows_a_closed_hand_and_restores_the_cursor(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     viewport = window.canvas.viewport()
     before = viewport.cursor().shape()
     pos = QPoint(300, 250)
@@ -369,7 +377,7 @@ def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_
     """Keyboard pan/zoom needs the view to actually have focus; otherwise
     arrow/+/- key presses go nowhere until the user thinks to click the canvas.
     """
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     QApplication.processEvents()
     assert window.canvas.hasFocus()
 
@@ -378,7 +386,7 @@ def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_
 
 
 def test_drawings_are_filled_half_transparent_without_lines_and_points(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     style = _drawing_item(window).view.style
     assert style.fill_color == FILL_COLOR and style.fill_opacity == pytest.approx(0.5)
     assert not style.show_lines and not style.show_points
@@ -386,7 +394,7 @@ def test_drawings_are_filled_half_transparent_without_lines_and_points(window: M
 
 def test_the_document_paints(window: MainWindow, donut_path: str) -> None:
     """Smoke test the whole paint path: image, fill, lines and points."""
-    window.load_image(donut_path)
+    open_image(window, donut_path)
     _add_square(window)
     window.canvas.set_vector_style(VectorStyle())  # lines and points too
 

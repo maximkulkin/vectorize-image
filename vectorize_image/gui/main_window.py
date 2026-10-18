@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
 
         # The model. The canvas, the Layers panel and the tools subscribe to
         # its signals; so does the window, to keep its actions and status
-        # bar in sync. `image` is the opened image, which Pen's edges are
+        # bar in sync. `image` is the last opened image, which Pen's edges are
         # traced from.
         self.document: Document = Document()
         self.image: RasterImage | None = None
@@ -438,8 +438,8 @@ class MainWindow(QMainWindow):
             self.load_image(path)
 
     def load_image(self, path: str) -> None:
-        """Start over on a new image: the document's layers become "Image"
-        and "Drawing" (current), and its history starts empty."""
+        """Add an image, in a new "Image" layer right above the current one
+        -- as one undo step -- and trace Pen's edges from it."""
         try:
             image = RasterImage.open(path)
         except Exception as exc:  # noqa: BLE001
@@ -452,13 +452,7 @@ class MainWindow(QMainWindow):
         self.image = image
         image.moved.connect(self._apply_edge_source)
         image.flipped.connect(self._refresh_edge_source)
-        layers = self.document.layers
-        for layer in list(layers):
-            layers.remove(layer)
-        layers.append(Layer("Image", [image]))
-        layers.append(drawing_layer := Layer("Drawing", [VectorDrawing()]))
-        self.document.current_layer = drawing_layer
-        self.document.history.clear()
+        self.document.add_layer(Layer("Image", [image]), "Open image")
 
         self.canvas.fit()
         self.canvas.setFocus()

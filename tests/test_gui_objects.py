@@ -18,7 +18,7 @@ from PySide6.QtGui import QCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QToolBar  # noqa: E402
 
-from conftest import click, drag, key, move, press, release  # noqa: E402
+from conftest import click, drag, key, move, press, release, open_image  # noqa: E402
 from vectorize_image.document import Layer, RasterImage, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.gui.document_items import GRAB_COLOR, RasterImageItem, VectorDrawingItem  # noqa: E402
@@ -39,7 +39,7 @@ def _straight(p0: tuple[float, float], p3: tuple[float, float]) -> Bezier:
 def _open_with_square(window: MainWindow, image_path: str) -> tuple[RasterImage, VectorDrawing]:
     """The image (150 x 150, in the "Image" layer) and, in the "Drawing"
     layer, a drawing of one square polygon over its top left."""
-    window.load_image(image_path)
+    open_image(window, image_path)
     drawing = window.document.current_drawing
     assert drawing is not None and window.image is not None
     contour = [_straight(CORNERS[i], CORNERS[(i + 1) % 4]) for i in range(4)]
@@ -522,7 +522,7 @@ def _lopsided_path(tmp_path: Path) -> str:
 
 
 def test_v_and_h_flip_an_image_and_what_shows_it(window: MainWindow, tmp_path: Path) -> None:
-    window.load_image(_lopsided_path(tmp_path))
+    open_image(window, _lopsided_path(tmp_path))
     image = window.image
     assert image is not None
     edges_before = window.trace_tool.edges
