@@ -17,7 +17,7 @@ is an attribute for inspection (e.g. by tests), not for tools to modify.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Final
 
@@ -68,11 +68,12 @@ class Canvas(ZoomableGraphicsView):
 
     # ------------------------------------------------------- move preview
 
-    def preview_move(self, drawing: VectorDrawing, points: frozenset[Point], delta: PointLike) -> None:
-        """Show `points` of `drawing` moved by `delta`, without moving them."""
+    def preview_move(self, drawing: VectorDrawing, offsets: Mapping[Point, PointLike]) -> None:
+        """Show each point of `drawing` in `offsets` moved by its offset,
+        without moving it."""
         item = self.document_item.item_for(drawing)
         if item is not None:
-            item.set_move_preview(points, delta)
+            item.set_move_preview(offsets)
 
     def end_move_preview(self, drawing: VectorDrawing) -> None:
         item = self.document_item.item_for(drawing)

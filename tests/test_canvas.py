@@ -348,7 +348,7 @@ def test_a_move_preview_draws_moved_without_moving(canvas: Canvas) -> None:
     corner = next(iter(drawing.points))
     line = drawing.lines_at(corner)[0]
 
-    canvas.preview_move(drawing, frozenset({corner}), (5, -5))
+    canvas.preview_move(drawing, {corner: (5, -5)})
 
     assert np.allclose(drawing.position(corner), (10, 10))
     assert np.allclose(item.bezier(line)[0 if line.start is corner else 3], (15, 5))

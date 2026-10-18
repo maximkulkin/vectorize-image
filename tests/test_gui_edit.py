@@ -126,6 +126,30 @@ def test_control_points_are_dragged_not_selected(window: MainWindow, diamond_pat
     assert window.undo_action.text() == "&Undo Move Control Point"
 
 
+def test_shift_dragging_a_control_point_mirrors_its_partner(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    corner, control = _point_at(drawing, CORNERS[0]), _control_by(drawing, CORNERS[0])
+    (partner,) = (c for c in drawing.controls_at(corner) if c is not control)  # on the left edge
+    anchor = drawing.position(corner)
+    reach = float(np.linalg.norm(drawing.position(partner) - anchor))
+    before = drawing.position(partner).copy()
+    x, y = drawing.position(control)
+
+    click(window, *CORNERS[0])
+    drag(window, (x, y), (x, y + 20), shift=True)
+
+    direction = drawing.position(control) - anchor
+    expected = anchor - direction / np.linalg.norm(direction) * reach
+    assert np.allclose(drawing.position(partner), expected, atol=1e-6)  # opposite it, as far from the corner
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+    assert window.document.selection.items == {corner}
+    assert window.undo_action.text() == "&Undo Move Control Points"
+
+    window.undo_action.trigger()  # both, as one step
+    assert np.allclose(drawing.position(partner), before)
+    assert np.allclose(drawing.position(control), (x, y))
+
+
 def test_control_points_can_be_dragged_in_lines_mode(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
     window.lines_mode_action.setChecked(True)

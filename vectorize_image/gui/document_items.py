@@ -20,7 +20,7 @@ down the tree to every VectorDrawingItem.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import assert_never, override
 
@@ -285,8 +285,9 @@ class VectorDrawingItem(ModelItem):
     (see VectorView).
 
     A move being dragged in the Edit tool is shown as a preview -- the
-    moving points drawn displaced, and everything made from them with
-    them -- without touching the drawing until the move is committed.
+    moving points drawn displaced, each by its own offset, and everything
+    made from them with them -- without touching the drawing until the
+    move is committed.
 
     Line widths and point sizes stay fixed on screen at any zoom, so they
     poke out of the drawing's bounds by a few pixels; the Canvas repaints
@@ -298,8 +299,7 @@ class VectorDrawingItem(ModelItem):
         self.drawing: VectorDrawing = drawing
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self._view: VectorView = VectorView()
-        self._moving: frozenset[Point] = frozenset()
-        self._delta: np.ndarray = np.zeros(2)
+        self._offsets: dict[Point, np.ndarray] = {}  # the move preview: how far each moving point is shown moved
         self._bounds: QRectF = self._compute_bounds()
         drawing.added.connect(self._on_changed)
         drawing.removed.connect(self._on_changed)
@@ -341,16 +341,16 @@ class VectorDrawingItem(ModelItem):
 
     # ---------------------------------------------------------- move preview
 
-    def set_move_preview(self, points: frozenset[Point], delta: PointLike) -> None:
-        """Show `points` moved by `delta` -- not moving them."""
+    def set_move_preview(self, offsets: Mapping[Point, PointLike]) -> None:
+        """Show each point of `offsets` moved by its offset -- not moving it."""
         self.prepareGeometryChange()
-        self._moving, self._delta = points, np.asarray(delta, dtype=float)
+        self._offsets = {point: np.asarray(offset, dtype=float) for point, offset in offsets.items()}
         self._bounds = self._compute_bounds()
         self.update()
 
     def clear_move_preview(self) -> None:
-        if self._moving:
-            self.set_move_preview(frozenset(), (0.0, 0.0))
+        if self._offsets:
+            self.set_move_preview({})
 
     def _on_changed(self, _elements: frozenset[object]) -> None:
         self.prepareGeometryChange()
@@ -364,8 +364,8 @@ class VectorDrawingItem(ModelItem):
         if not self.drawing:
             return QRectF()
         positions = np.array([self.drawing.position(point) for point in self.drawing.points])
-        if self._moving:
-            positions = np.concatenate([positions, [self._position(point) for point in self._moving]])
+        if self._offsets:
+            positions = np.concatenate([positions, [self._position(point) for point in self._offsets]])
         (x0, y0), (x1, y1) = positions.min(axis=0), positions.max(axis=0)
         return QRectF(float(x0), float(y0), float(x1 - x0), float(y1 - y0)).adjusted(-1, -1, 1, 1)
 
@@ -377,7 +377,8 @@ class VectorDrawingItem(ModelItem):
 
     def _position(self, point: Point) -> np.ndarray:
         position = self.drawing.position(point)
-        return position + self._delta if point in self._moving else position
+        offset = self._offsets.get(point)
+        return position if offset is None else position + offset
 
     def bezier(self, line: Line) -> Bezier:
         """The line as drawn, move preview included."""

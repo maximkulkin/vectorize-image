@@ -1,6 +1,7 @@
 """What the Edit tool's moves and deletes take along, and which control
-points it shows, for a selection in each mode. Qt-free; the tool turns
-these into commands, and the canvas into handles.
+points it shows, for a selection in each mode -- and how a shift-drag of
+one swings its partner around. Qt-free; the tool turns these into
+commands, and the canvas into handles.
 """
 
 from __future__ import annotations
@@ -8,9 +9,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import assert_never
 
+import numpy as np
+
 from .document import BezierCurve, Element, Line, Point, Polygon, VectorDrawing
 from .document.hit_test import is_control
-from .typedefs import ElementMode
+from .typedefs import ElementMode, PointLike
 
 
 def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozenset[Point]:
@@ -53,6 +56,43 @@ def controls_shown(drawing: VectorDrawing, items: Iterable[Element]) -> frozense
                 for line in item.lines:
                     controls.update(_controls_of(line))
     return frozenset(controls)
+
+
+def mirrored_partner(drawing: VectorDrawing, control: Point, delta: PointLike) -> tuple[Point, np.ndarray] | None:
+    """For a shift-drag moving `control` by `delta`: the other control
+    point belonging to the same end (on the other curve through it, or the
+    other end of a loop), and how far to move it to put it opposite
+    `control` -- on the line through the end and `control`, on the other
+    side, as far from the end as it was. A smooth node, as in any vector
+    editor. None if the end has no one partner (it's an open end, or more
+    than two curves meet there), or `control` lands right on the end,
+    leaving no line to put the partner on.
+    """
+    end = _end_of(drawing, control)
+    if end is None:
+        return None
+    partners = [point for point in drawing.controls_at(end) if point is not control]
+    if len(partners) != 1:
+        return None
+    (partner,) = partners
+    anchor = drawing.position(end)
+    direction = drawing.position(control) + np.asarray(delta, dtype=float) - anchor
+    length = float(np.linalg.norm(direction))
+    if length == 0.0:
+        return None
+    reach = float(np.linalg.norm(drawing.position(partner) - anchor))
+    return partner, anchor - direction * (reach / length) - drawing.position(partner)
+
+
+def _end_of(drawing: VectorDrawing, control: Point) -> Point | None:
+    """The end `control` belongs to: its curve's start, for P1; its end, for P2."""
+    for line in drawing.lines_using(control):
+        if isinstance(line, BezierCurve):
+            if control is line.control1:
+                return line.start
+            if control is line.control2:
+                return line.end
+    return None
 
 
 def _controls_of(line: Line) -> tuple[Point, ...]:

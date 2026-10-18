@@ -32,6 +32,8 @@ from PySide6.QtWidgets import QGraphicsItem
 
 from .. import pen
 from ..document import (
+    Batch,
+    Command,
     Document,
     Element,
     Item,
@@ -54,7 +56,7 @@ from ..document.hit_test import (
     nearest_point,
     selectable_in,
 )
-from ..edit import controls_shown, elements_to_delete, points_to_move
+from ..edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move
 from ..signals import Signal, disconnect
 from ..typedefs import Bezier
 from .canvas import Canvas
@@ -95,9 +97,10 @@ EDIT_HINT = (
     "with Tweak (W), click or drag one to move it; or drag a box (B) or "
     "paint (C), then drag from anywhere with Move (G) -- or press Delete "
     "to remove them. Control points (purple) show for what's selected: "
-    "drag one to reshape its curve, leaving the selection as it is. Moving "
-    "a point carries its own along. Esc cancels a drag in progress. Tab "
-    "goes back to object mode."
+    "drag one to reshape its curve, leaving the selection as it is -- with "
+    "Shift, its partner across the point swings opposite, keeping the curve "
+    "smooth there. Moving a point carries its own along. Esc cancels a drag "
+    "in progress. Tab goes back to object mode."
 )
 
 
@@ -381,9 +384,10 @@ class MoveTool(SelectTool):
     polygons -- after selecting what's under the cursor, if it isn't
     already (see _grab). Or drag one of the control points shown for the
     selection (see edit.controls_shown) to move just it, reshaping its
-    curve without selecting anything. The drag is previewed on the canvas
-    and committed as one move when the button is released. TweakTool
-    selects on press differently."""
+    curve without selecting anything -- with shift held at the press, its
+    partner swinging opposite it (see edit.mirrored_partner). The drag is
+    previewed on the canvas and committed as one move when the button is
+    released. TweakTool selects on press differently."""
 
     name: ClassVar[str] = "move"
 
@@ -392,7 +396,8 @@ class MoveTool(SelectTool):
         self._drag_origin: tuple[float, float] | None = None  # press position, for computing a drag's delta
         self._drag_points: frozenset[Point] = frozenset()  # what the drag moves
         self._drag_delta: tuple[float, float] = (0.0, 0.0)
-        self._dragging_handle: bool = False  # whether the drag is of a control point, not the selection
+        self._handle: Point | None = None  # the control point a drag moves on its own, if it's that kind of drag
+        self._mirror: bool = False  # whether that drag swings the handle's partner opposite it (shift)
         self._drawing: VectorDrawing | None = None  # what hover/drag state refers to
         self._pressed: tuple[Element | None, bool] = (None, False)  # (what, with shift) the last press was on
         self.hover_target: Element | None = None
@@ -468,7 +473,8 @@ class MoveTool(SelectTool):
         self._drag_origin = None
         self._drag_points = frozenset()
         self._drag_delta = (0.0, 0.0)
-        self._dragging_handle = False
+        self._handle = None
+        self._mirror = False
         self._set_active(None)
 
     def _select_on_press(self, hit: Element | None, shift: bool) -> bool:
@@ -487,7 +493,11 @@ class MoveTool(SelectTool):
             return
         if self._drag_origin is not None:
             self._drag_delta = (pos[0] - self._drag_origin[0], pos[1] - self._drag_origin[1])
-            self.canvas.preview_move(drawing, self._drag_points, self._drag_delta)
+            offsets = {point: self._drag_delta for point in self._drag_points}
+            partner = self._partner_move(drawing)
+            if partner is not None:
+                offsets[partner[0]] = partner[1]
+            self.canvas.preview_move(drawing, offsets)
             self._set_active(self.active_target)
             return
         self._set_hover(self._hit(pos))
@@ -503,7 +513,7 @@ class MoveTool(SelectTool):
             # A handle: dragged on its own, whatever's selected, which stays so.
             self._pressed = (None, shift)
             self._start_drag(pos, frozenset({hit}), hit)
-            self._dragging_handle = True
+            self._handle, self._mirror = hit, shift
             return
         self._pressed = (hit, shift)
         if not self._select_on_press(hit, shift):
@@ -518,13 +528,30 @@ class MoveTool(SelectTool):
         self._set_hover(None)
         self._set_active(target)
 
+    def _partner_move(self, drawing: VectorDrawing) -> tuple[Point, tuple[float, float]] | None:
+        """In a shift-drag of a handle: its partner, and how far it swings."""
+        if self._handle is None or not self._mirror:
+            return None
+        partner = mirrored_partner(drawing, self._handle, self._drag_delta)
+        if partner is None:
+            return None
+        point, (dx, dy) = partner
+        return point, (float(dx), float(dy))
+
     @override
     def on_release(self, scene_pos: QPointF) -> None:
         drawing, points, delta, dragged = self._drawing, self._drag_points, self._drag_delta, self.dragging
-        text = "Move Control Point" if self._dragging_handle else f"Move {self.selection.mode.title()}"
+        partner = None if drawing is None else self._partner_move(drawing)
+        if self._handle is None:
+            text = f"Move {self.selection.mode.title()}"
+        else:
+            text = "Move Control Point" if partner is None else "Move Control Points"
         self._end_drag()
         if drawing is not None and points and delta != (0.0, 0.0):
-            self.document.history.push(Translate(drawing, points, delta, text))
+            move: Command = Translate(drawing, points, delta, text)
+            if partner is not None:
+                move = Batch([move, Translate(drawing, {partner[0]}, partner[1])], text)
+            self.document.history.push(move)
         elif dragged:
             self._on_click(*self._pressed)
 

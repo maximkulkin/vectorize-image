@@ -1,5 +1,7 @@
+import numpy as np
+
 from vectorize_image.document import BezierCurve, Line, Point, VectorDrawing
-from vectorize_image.edit import controls_shown, elements_to_delete, points_to_move
+from vectorize_image.edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move
 
 
 def _curve(drawing: VectorDrawing, start: Point, end: Point) -> Line:
@@ -52,6 +54,41 @@ def test_controls_shown_for_lines_and_polygons_are_their_curves() -> None:
     assert controls_shown(drawing, [curves[0]]) == set(curves[0].points[1:3])
     assert controls_shown(drawing, [straight]) == set()
     assert controls_shown(drawing, [polygon]) == controls
+
+
+def _chain(drawing: VectorDrawing, positions: list[tuple[float, float]]) -> list[BezierCurve]:
+    """Curves through `positions`: end, control, control, end, control, ..."""
+    points = [drawing.add_point(p) for p in positions]
+    curves: list[BezierCurve] = []
+    for i in range(0, len(points) - 1, 3):
+        curve = drawing.add_curve(points[i], points[i + 3], points[i + 1], points[i + 2])
+        assert isinstance(curve, BezierCurve)
+        curves.append(curve)
+    return curves
+
+
+def test_mirroring_swings_the_partner_opposite_keeping_its_length() -> None:
+    drawing = VectorDrawing()
+    ab, bc = _chain(drawing, [(0, 0), (3, 0), (8, 0), (10, 0), (13, 0), (17, 0), (20, 0)])  # b at (10, 0)
+
+    partner = mirrored_partner(drawing, ab.control2, (2, 2))  # to (10, 2): straight up from b
+
+    assert partner is not None
+    point, offset = partner
+    assert point is bc.control1
+    assert np.allclose(drawing.position(point) + offset, (10, -3))  # straight down, still 3 from b
+
+
+def test_mirroring_needs_exactly_one_partner_and_a_direction() -> None:
+    drawing = VectorDrawing()
+    ab, _ = _chain(drawing, [(0, 0), (3, 0), (8, 0), (10, 0), (13, 0), (17, 0), (20, 0)])
+    assert mirrored_partner(drawing, ab.control1, (0, 5)) is None  # a is an open end: no partner
+    assert mirrored_partner(drawing, ab.control2, (2, 0)) is None  # onto b itself: no line to mirror across
+
+    b = ab.end
+    tip, c1, c2 = drawing.add_point((10, 10)), drawing.add_point((10, 3)), drawing.add_point((10, 7))
+    drawing.add_curve(b, tip, c1, c2)  # a third curve at b
+    assert mirrored_partner(drawing, ab.control2, (0, 5)) is None
 
 
 def test_deleting_points_skips_lone_control_points() -> None:
