@@ -41,11 +41,9 @@ def _trace(window: MainWindow, corners: list[tuple[float, float]]) -> None:
         click(window, x, y)
 
 
-def test_pen_shows_its_settings_and_outlines_the_current_drawing(window: MainWindow, diamond_path: str) -> None:
+def test_pen_outlines_the_current_drawing(window: MainWindow, diamond_path: str) -> None:
     _pen(window, diamond_path)
 
-    assert window.manual_group.isVisibleTo(window)
-    assert window.manual_hint_label.text() == window.trace_tool.hint
     assert window.canvas.document_item.view.outline_current
     assert not window.canvas.document_item.view.show_controls
     assert len(window.trace_tool.edges.contours) >= 1

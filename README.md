@@ -117,10 +117,8 @@ A click-to-place "magnetic pen", drawing in the current layer:
    open end later continues right from there. A starting point that never
    got a curve leaves nothing behind.
 
-The **Edge Detection** settings in the sidebar decide what counts as ink in
-the image, and so where the edges Pen snaps to are: the **threshold** (Auto
-picks one with Otsu's method) and **invert** (for light ink on a dark
-background).
+The edges Pen snaps to are between the image's dark ink and its light
+background, split at a threshold picked with Otsu's method.
 
 #### Edit
 
@@ -144,8 +142,7 @@ Three more pick *how* a click or drag builds the selection:
 - **Box Select** — **drag a rectangle**; on release, everything it touches
   is selected (a curve or polygon only needs to pass through the box).
   Plain drag replaces the selection; Shift-drag adds to it.
-- **Paint Select** — a circle of adjustable radius (**Brush radius** in the
-  sidebar) follows the cursor; **press and drag** to select everything it
+- **Paint Select** — a circle follows the cursor; **press and drag** to select everything it
   touches as you sweep it around. Without Shift, a new stroke starts from
   an empty selection; with Shift, it adds to it.
 
@@ -174,18 +171,17 @@ tangents at it.
 
 ### Undo/redo
 
-Every change to the document — a curve drawn, a move, a delete, clearing
-a drawing, and adding, deleting, renaming or moving a layer — is one step
+Every change to the document — a curve drawn, a move, a delete,
+and adding, deleting, renaming or moving a layer — is one step
 on an undo stack, via **Edit → Undo** / **Redo** (`Ctrl+Z` /
 `Ctrl+Shift+Z`, also on the toolbar). The menu names the step, e.g.
 "Undo Draw Curve".
 
 ### Display
 
-**Vector opacity** and **Overlay color** set how polygons are filled, over
-the image; check **Show lines and points** to also draw every drawing's
-curves and points (the current layer's always show while drawing or
-editing). Lines and points keep a constant on-screen size at any zoom.
+Polygons are filled half-transparent red, over the image — and red is
+what Export SVG fills them with. The current layer's curves and points
+show while drawing or editing it, at a constant on-screen size at any zoom.
 
 ### Canvas navigation
 

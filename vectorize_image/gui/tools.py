@@ -100,38 +100,6 @@ START_MARKER_RADIUS_PX = 6.5
 ITEM_BOX_PAD_PX = 4.0  # how far object mode's boxes stand off the items they surround
 SPLIT_END_GAP_PX = 2 * POINT_RADIUS_PX  # how far (on screen) from a line's ends a point can be added to it
 
-OBJECT_HINT = (
-    "Object mode: select whole drawings and images of the current layer "
-    "(pick it in the Layers panel) -- with Tweak (W), click (shift-click "
-    "for more) or drag one to move it; or drag a box (B) or paint (C), "
-    "then drag from anywhere with Move -- or press G to move them with the "
-    "cursor and click to place them (X or Y keeps to one axis, Esc "
-    "cancels); H or V flips them horizontally or vertically, and Delete "
-    "removes them. Press Tab to edit the layer's drawing, and Tab again to "
-    "come back. Esc deselects."
-)
-TRACE_HINT = (
-    "Click to place a point. Move the cursor to preview a curve snapped to "
-    "the nearest edge, then click to commit it and continue. Click near an "
-    "open (orange) point to connect to it -- that's how you close a loop. "
-    "Esc stops. Draws in the current layer."
-)
-EDIT_HINT = (
-    "Select points, lines or polygons of the current layer's drawing -- "
-    "with Tweak (W), click or drag one to move it; or drag a box (B) or "
-    "paint (C), then drag from anywhere with Move, or press G to move them "
-    "with the cursor and click to place them (X or Y keeps to one axis) -- "
-    "or press Delete to remove them, or H or V to flip them horizontally or "
-    "vertically. Control points (purple) show for what's selected: "
-    "drag one to reshape its curve, leaving the selection as it is -- with "
-    "Shift, its partner across the point swings opposite, keeping the curve "
-    "smooth there. Moving a point carries its own along. Press A, then click "
-    "a line to add a point on it, splitting it in two; or Ctrl+Backspace to "
-    "dissolve the selected points, merging the two lines through each into "
-    "one. Esc cancels a drag, a G move or an A in progress. Tab goes back "
-    "to object mode."
-)
-
 
 def _xy(scene_pos: QPointF) -> tuple[float, float]:
     return (scene_pos.x(), scene_pos.y())
@@ -141,7 +109,6 @@ class Tool:
     """Base class; every hook is a no-op by default."""
 
     name: ClassVar[str] = ""
-    hint: ClassVar[str] = ""  # sidebar help text
     captures_mouse: ClassVar[bool] = False  # takes over left-button input from view panning
 
     # status_hint() changed for a reason the document's own signals don't cover.
@@ -270,7 +237,6 @@ class TraceTool(Tool):
     for the geometry."""
 
     name: ClassVar[str] = "trace"
-    hint: ClassVar[str] = TRACE_HINT
     captures_mouse: ClassVar[bool] = True
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
@@ -1374,7 +1340,6 @@ class EditTool(SelectingTool[Element]):
     a line (see AddPointTool), or dissolve selected points."""
 
     name: ClassVar[str] = "edit"
-    hint: ClassVar[str] = EDIT_HINT
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas, ElementTarget)
@@ -1466,7 +1431,6 @@ class ObjectTool(SelectingTool[Item]):
     GRAB_COLOR while it's a grab."""
 
     name: ClassVar[str] = "object"
-    hint: ClassVar[str] = OBJECT_HINT
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas, ItemTarget)

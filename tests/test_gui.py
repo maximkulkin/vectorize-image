@@ -16,12 +16,11 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGraphicsView  # noqa: E402
 
-from conftest import wait_until  # noqa: E402
 from vectorize_image import svgwrite  # noqa: E402
 from vectorize_image.document import Insert, RasterImage, VectorDrawing  # noqa: E402
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
-from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
-from vectorize_image.gui.main_window import MainWindow  # noqa: E402
+from vectorize_image.gui.document_items import VectorDrawingItem, VectorStyle  # noqa: E402
+from vectorize_image.gui.main_window import FILL_COLOR, MainWindow  # noqa: E402
 from vectorize_image.gui.pan_zoom import PanZoom  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
@@ -91,24 +90,6 @@ def test_loading_an_image_builds_image_and_drawing_layers(window: MainWindow, do
 def test_loading_an_image_traces_its_edges_for_the_pen(window: MainWindow, donut_path: str) -> None:
     window.load_image(donut_path)
     assert len(window.trace_tool.edges.contours) == 2  # the donut's outside and its hole
-    assert window.threshold_row.value() == pytest.approx(128.0, abs=1.0)  # Otsu's choice, shown
-
-
-def test_edge_settings_retrace_the_edges_after_a_pause(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    before = window.trace_tool.edges
-
-    window.invert_checkbox.setChecked(True)
-    assert window.trace_tool.edges is before  # not yet: debounced
-    wait_until(lambda: window.trace_tool.edges is not before)
-
-
-def test_manual_threshold(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    window.auto_threshold_checkbox.setChecked(False)
-    assert window.threshold_row.slider.isEnabled()
-    window.auto_threshold_checkbox.setChecked(True)
-    assert not window.threshold_row.slider.isEnabled()
 
 
 def test_failed_load_leaves_the_document_alone(
@@ -162,7 +143,7 @@ def test_export_svg_writes_the_document(window: MainWindow, donut_path: str, tmp
 
     _export_to(window, out_path, monkeypatch)
 
-    expected = svgwrite.build_svg(_drawing(window).shapes(), 100, 100, fill=window._overlay_color.name(), precision=2)
+    expected = svgwrite.build_svg(_drawing(window).shapes(), 100, 100, fill=FILL_COLOR.name(), precision=2)
     assert out_path.read_text(encoding="utf-8") == expected
     assert expected.count("<path") == 1
 
@@ -182,7 +163,7 @@ def test_export_svg_without_an_image(window: MainWindow, tmp_path: Path, monkeyp
     _export_to(window, out_path, monkeypatch)
 
     shapes = [shape for drawing in window._exported_drawings() for shape in drawing.shapes()]
-    expected = svgwrite.build_svg(shapes, 71, 80, fill=window._overlay_color.name(), precision=2)
+    expected = svgwrite.build_svg(shapes, 71, 80, fill=FILL_COLOR.name(), precision=2)
     assert out_path.read_text(encoding="utf-8") == expected  # sized to fit the shapes
 
 
@@ -396,45 +377,18 @@ def test_canvas_receives_focus_after_loading_an_image(window: MainWindow, donut_
 # ------------------------------------------------------------- display
 
 
-def test_opacity_and_color_style_the_drawing(window: MainWindow, donut_path: str) -> None:
+def test_drawings_are_filled_half_transparent_without_lines_and_points(window: MainWindow, donut_path: str) -> None:
     window.load_image(donut_path)
-
-    window.opacity_slider.setValue(80)
-
-    assert _drawing_item(window).view.style.fill_opacity == pytest.approx(0.8)
-    assert _drawing_item(window).view.style.fill_color == window._overlay_color
-    assert window.opacity_label.text() == "80%"
-
-
-def test_lines_and_points_hidden_by_default_and_toggled(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    assert window.wireframe_checkbox.isChecked() is False
     style = _drawing_item(window).view.style
+    assert style.fill_color == FILL_COLOR and style.fill_opacity == pytest.approx(0.5)
     assert not style.show_lines and not style.show_points
-
-    window.wireframe_checkbox.setChecked(True)
-    style = _drawing_item(window).view.style
-    assert style.show_lines and style.show_points
-
-
-def test_reset_to_defaults(window: MainWindow, donut_path: str) -> None:
-    window.load_image(donut_path)
-    window.invert_checkbox.setChecked(True)
-    window.opacity_slider.setValue(10)
-    window.wireframe_checkbox.setChecked(True)
-
-    window._reset_defaults()
-
-    assert not window.invert_checkbox.isChecked()
-    assert window.opacity_slider.value() == 50
-    assert not _drawing_item(window).view.style.show_lines
 
 
 def test_the_document_paints(window: MainWindow, donut_path: str) -> None:
     """Smoke test the whole paint path: image, fill, lines and points."""
     window.load_image(donut_path)
     _add_square(window)
-    window.wireframe_checkbox.setChecked(True)
+    window.canvas.set_vector_style(VectorStyle())  # lines and points too
 
     image = QImage(100, 100, QImage.Format.Format_ARGB32_Premultiplied)
     painter = QPainter(image)

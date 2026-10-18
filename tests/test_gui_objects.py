@@ -187,7 +187,6 @@ def test_select_tool_shortcuts_work_in_object_mode(window: MainWindow, diamond_p
     assert window.tool is window.object_tool and window.object_tool.select_tool is window.object_tool.box_tool
     _shortcut(window, Qt.Key.Key_C)
     assert window.object_tool.select_tool is window.object_tool.paint_tool
-    assert window.paint_radius_widget.isVisibleTo(window)
 
 
 # -------------------------------------------------------------- selecting
@@ -257,7 +256,7 @@ def test_box_select_selects_the_current_layers_items(window: MainWindow, diamond
 def test_paint_select_selects_the_current_layers_items(window: MainWindow, diamond_path: str) -> None:
     image, drawing = _open_with_square(window, diamond_path)
     window.paint_select_action.trigger()
-    window.paint_radius_row.setValue(5)
+    window.object_tool.paint_tool.set_radius(5)
     selection = window.document.selection
 
     press(window, 130, 130)  # the image only

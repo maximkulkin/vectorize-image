@@ -714,8 +714,7 @@ def test_box_select_guides_before_any_image(window: MainWindow) -> None:
 def test_paint_select_adds_what_the_brush_passes_over(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
     window.paint_select_action.setChecked(True)
-    assert window.paint_radius_widget.isVisibleTo(window)
-    window.paint_radius_row.setValue(5)
+    window.edit_tool.paint_tool.set_radius(5)
 
     press(window, *CORNERS[0])
     move(window, *CORNERS[1])
@@ -723,9 +722,6 @@ def test_paint_select_adds_what_the_brush_passes_over(window: MainWindow, diamon
     release(window, *CORNERS[0])
 
     assert {_point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])} <= window.document.selection.items
-
-    window.tweak_action.setChecked(True)
-    assert not window.paint_radius_widget.isVisibleTo(window)
 
 
 def test_edit_works_on_the_current_layer(window: MainWindow, diamond_path: str) -> None:
@@ -742,14 +738,6 @@ def test_edit_works_on_the_current_layer(window: MainWindow, diamond_path: str) 
     window.document.current_layer = window.document.layers[1]
     click(window, *CORNERS[0])
     assert window.document.selection.drawing is drawing and window.document.selection
-
-
-def test_clear_button_empties_the_current_drawing_undoably(window: MainWindow, diamond_path: str) -> None:
-    drawing, _ = _edit_square(window, diamond_path)
-    window._clear_current_drawing()
-    assert not drawing
-    window.undo_action.trigger()
-    assert len(drawing.polygons) == 1
 
 
 def test_leaving_edit_clears_the_selection_and_overlays(window: MainWindow, diamond_path: str) -> None:

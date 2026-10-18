@@ -1,5 +1,5 @@
-"""Main window: the Canvas showing the Document, with the tools, the Layers
-panel and the settings around it.
+"""Main window: the Canvas showing the Document, with the tools and the
+Layers panel around it.
 
 Opening an image makes a fresh document of two layers, bottom to top:
 "Image", holding the picture, and "Drawing", an empty vector drawing that
@@ -30,34 +30,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
-
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QColorDialog,
-    QDockWidget,
-    QFileDialog,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QMainWindow,
-    QMenu,
-    QMessageBox,
-    QPushButton,
-    QSlider,
-    QSplitter,
-    QToolButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMenu, QMessageBox, QToolButton
 
 from .. import binarize, simplify, svgread, svgwrite, tracing
 from ..clipboard import Clipboard
-from ..document import Document, Layer, RasterImage, Remove, VectorDrawing
+from ..document import Document, Layer, RasterImage, VectorDrawing
 from ..edit import elements_connected
 from ..signals import disconnect
 from ..typedefs import Axis, ElementMode, Shape
@@ -65,30 +45,10 @@ from .canvas import Canvas
 from .document_items import VectorStyle
 from .layers_panel import LayersPanel
 from .themed_icons import themed_icon
-from .tools import PAINT_SELECT_DEFAULT_RADIUS_PX, EditTool, ObjectTool, Tool, TraceTool
-from .widgets import SliderSpinRow
+from .tools import EditTool, ObjectTool, Tool, TraceTool
 
-DEBOUNCE_MS = 150  # how long the edge settings must sit still before the edges are retraced
 EDGE_SIMPLIFY_TOLERANCE = 1.0
-
-
-class DefaultSettings(TypedDict):
-    auto_threshold: bool
-    threshold: float
-    invert: bool
-    overlay_color: str
-    opacity: int
-    show_wireframe: bool
-
-
-DEFAULTS: DefaultSettings = {
-    "auto_threshold": True,
-    "threshold": 128.0,
-    "invert": False,
-    "overlay_color": "#e63946",
-    "opacity": 50,
-    "show_wireframe": False,
-}
+FILL_COLOR = QColor("#e63946")  # how vector drawings show, and what Export SVG fills them with
 
 
 def _when_checked(action: QAction, callback: Callable[[], object]) -> None:
@@ -142,17 +102,6 @@ class MainWindow(QMainWindow):
     canvas: Canvas
     layers_panel: LayersPanel
     layers_dock: QDockWidget
-    manual_group: QGroupBox
-    manual_hint_label: QLabel
-    paint_radius_widget: QWidget
-    paint_radius_row: SliderSpinRow
-    auto_threshold_checkbox: QCheckBox
-    threshold_row: SliderSpinRow
-    invert_checkbox: QCheckBox
-    opacity_slider: QSlider
-    opacity_label: QLabel
-    color_button: QPushButton
-    wireframe_checkbox: QCheckBox
     # Tools, created by _build_tools.
     object_tool: ObjectTool
     trace_tool: TraceTool
@@ -163,8 +112,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Vectorize Image")
         self.resize(1300, 850)
-
-        self._overlay_color: QColor = QColor(DEFAULTS["overlay_color"])
 
         # The model. The canvas, the Layers panel and the tools subscribe to
         # its signals; so does the window, to keep its actions and status
@@ -182,14 +129,8 @@ class MainWindow(QMainWindow):
         self.clipboard: Clipboard = Clipboard()
         self.clipboard.changed.connect(self._update_selection_actions)
 
-        self._debounce: QTimer = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.timeout.connect(self._refresh_edge_source)
-
         self._build_ui()
         self._build_tools()
-        self._update_settings_enabled()
-        self._apply_vector_style()
 
     # ---------------------------------------------------------------- UI
 
@@ -197,13 +138,7 @@ class MainWindow(QMainWindow):
         self._build_layers_dock()
         self._build_actions_and_menus()
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._build_canvas())
-        splitter.addWidget(self._build_sidebar())
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([950, 350])
-        self.setCentralWidget(splitter)
+        self.setCentralWidget(self._build_canvas())
 
         self.statusBar().showMessage("Open an image to get started.")
 
@@ -478,25 +413,10 @@ class MainWindow(QMainWindow):
             tools_toolbar.addAction(action)
         self._set_selection_actions_visible(False)
 
-    def _build_canvas(self) -> QWidget:
+    def _build_canvas(self) -> Canvas:
         self.canvas = Canvas(self.document)
+        self.canvas.set_vector_style(VectorStyle(fill_color=FILL_COLOR, show_lines=False, show_points=False))
         return self.canvas
-
-    def _build_sidebar(self) -> QWidget:
-        sidebar = QWidget()
-        layout = QVBoxLayout(sidebar)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        layout.addWidget(self._build_manual_group())
-        layout.addWidget(self._build_edges_group())
-        layout.addWidget(self._build_display_group())
-
-        reset_button = QPushButton("Reset to Defaults")
-        reset_button.clicked.connect(self._reset_defaults)
-        layout.addWidget(reset_button)
-
-        layout.addStretch(1)
-        return sidebar
 
     def _build_layers_dock(self) -> None:
         """The Layers panel, in a dock of its own -- shown or hidden from the
@@ -507,77 +427,6 @@ class MainWindow(QMainWindow):
         self.layers_dock.setWidget(self.layers_panel)
         self.layers_dock.toggleViewAction().setToolTip("Show or hide the Layers panel")
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
-
-    def _build_manual_group(self) -> QGroupBox:
-        self.manual_group = QGroupBox("Drawing")
-        layout = QVBoxLayout(self.manual_group)
-
-        self.manual_hint_label = QLabel()
-        self.manual_hint_label.setWordWrap(True)
-        layout.addWidget(self.manual_hint_label)
-
-        self.paint_radius_widget = QWidget()
-        paint_form = QFormLayout(self.paint_radius_widget)
-        paint_form.setContentsMargins(0, 0, 0, 0)
-        self.paint_radius_row = SliderSpinRow(5.0, 150.0, PAINT_SELECT_DEFAULT_RADIUS_PX, decimals=0, step=1)
-        self.paint_radius_row.valueChanged.connect(self._on_paint_radius_changed)
-        paint_form.addRow("Brush radius (px)", self.paint_radius_row)
-        layout.addWidget(self.paint_radius_widget)
-        self.paint_radius_widget.setVisible(False)
-
-        clear_button = QPushButton("Clear Current Layer's Drawing")
-        clear_button.clicked.connect(self._clear_current_drawing)
-        layout.addWidget(clear_button)
-        return self.manual_group
-
-    def _build_edges_group(self) -> QGroupBox:
-        """What counts as ink in the image, and so where its edges -- the
-        ones Pen snaps to -- are."""
-        group = QGroupBox("Edge Detection")
-        form = QFormLayout(group)
-
-        self.auto_threshold_checkbox = QCheckBox("Auto (Otsu)")
-        self.auto_threshold_checkbox.setChecked(DEFAULTS["auto_threshold"])
-        self.auto_threshold_checkbox.toggled.connect(self._on_auto_threshold_toggled)
-        form.addRow("Threshold mode", self.auto_threshold_checkbox)
-
-        self.threshold_row = SliderSpinRow(0, 255, DEFAULTS["threshold"], decimals=0, step=1)
-        self.threshold_row.valueChanged.connect(self._on_param_changed)
-        form.addRow("Threshold", self.threshold_row)
-
-        self.invert_checkbox = QCheckBox("Treat light pixels as ink")
-        self.invert_checkbox.setChecked(DEFAULTS["invert"])
-        self.invert_checkbox.toggled.connect(self._on_param_changed)
-        form.addRow("Invert", self.invert_checkbox)
-
-        return group
-
-    def _build_display_group(self) -> QGroupBox:
-        group = QGroupBox("Overlay Display")
-        form = QFormLayout(group)
-
-        opacity_row = QHBoxLayout()
-        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setValue(DEFAULTS["opacity"])
-        self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        self.opacity_label = QLabel(f"{DEFAULTS['opacity']}%")
-        self.opacity_label.setFixedWidth(36)
-        opacity_row.addWidget(self.opacity_slider, 1)
-        opacity_row.addWidget(self.opacity_label)
-        form.addRow("Vector opacity", opacity_row)
-
-        self.color_button = QPushButton()
-        self.color_button.clicked.connect(self._pick_color)
-        self._update_color_button()
-        form.addRow("Overlay color", self.color_button)
-
-        self.wireframe_checkbox = QCheckBox("Show lines and points")
-        self.wireframe_checkbox.setChecked(DEFAULTS["show_wireframe"])
-        self.wireframe_checkbox.toggled.connect(self._on_wireframe_toggled)
-        form.addRow("", self.wireframe_checkbox)
-
-        return group
 
     # ------------------------------------------------------------ actions
 
@@ -660,7 +509,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         width, height = self._page_size(shapes)
-        svg = svgwrite.build_svg(shapes, width, height, fill=self._overlay_color.name(), precision=2)
+        svg = svgwrite.build_svg(shapes, width, height, fill=FILL_COLOR.name(), precision=2)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(svg)
@@ -675,72 +524,12 @@ class MainWindow(QMainWindow):
         extent = np.max([point for shape in shapes for contour in shape for bezier in contour for point in bezier], axis=0)
         return float(np.ceil(max(extent[0], 0.0))), float(np.ceil(max(extent[1], 0.0)))
 
-    def _reset_defaults(self) -> None:
-        self.auto_threshold_checkbox.setChecked(DEFAULTS["auto_threshold"])
-        self.threshold_row.setValue(DEFAULTS["threshold"])
-        self.invert_checkbox.setChecked(DEFAULTS["invert"])
-        self._overlay_color = QColor(DEFAULTS["overlay_color"])
-        self._update_color_button()
-        self.opacity_slider.setValue(DEFAULTS["opacity"])
-        self.wireframe_checkbox.setChecked(DEFAULTS["show_wireframe"])
-        self._apply_vector_style()
-        self._on_param_changed()
-
-    def _pick_color(self) -> None:
-        color = QColorDialog.getColor(self._overlay_color, self, "Choose Overlay Color")
-        if color.isValid():
-            self._overlay_color = color
-            self._update_color_button()
-            self._apply_vector_style()
-
-    def _update_color_button(self) -> None:
-        name = self._overlay_color.name()
-        self.color_button.setText(name)
-        self.color_button.setStyleSheet(f"background-color: {name};")
-
-    def _on_auto_threshold_toggled(self, _checked: bool) -> None:
-        self._update_settings_enabled()
-        self._on_param_changed()
-
-    def _update_settings_enabled(self) -> None:
-        self.threshold_row.setEnabled(not self.auto_threshold_checkbox.isChecked())
-
-    def _on_opacity_changed(self, value: int) -> None:
-        self.opacity_label.setText(f"{value}%")
-        self._apply_vector_style()
-
-    def _on_wireframe_toggled(self, _checked: bool) -> None:
-        self._apply_vector_style()
-
-    def _apply_vector_style(self) -> None:
-        show_wireframe = self.wireframe_checkbox.isChecked()
-        self.canvas.set_vector_style(
-            VectorStyle(
-                fill_color=self._overlay_color,
-                fill_opacity=self.opacity_slider.value() / 100.0,
-                show_lines=show_wireframe,
-                show_points=show_wireframe,
-            )
-        )
-
-    def _on_paint_radius_changed(self, value: float) -> None:
-        self.object_tool.paint_tool.set_radius(value)
-        self.edit_tool.paint_tool.set_radius(value)
-
-    def _clear_current_drawing(self) -> None:
-        """Remove everything from the current layer's drawing, as one undo step."""
-        drawing = self.document.current_drawing
-        if drawing:
-            self.document.history.push(Remove(drawing, list(drawing.points), "Clear Drawing"))
-
     # ------------------------------------------------------------- tools
 
     def _build_tools(self) -> None:
         self.object_tool = ObjectTool(self.document, self.canvas)
         self.trace_tool = TraceTool(self.document, self.canvas)
         self.edit_tool = EditTool(self.document, self.canvas)
-        self.object_tool.paint_tool.set_radius(self.paint_radius_row.value())
-        self.edit_tool.paint_tool.set_radius(self.paint_radius_row.value())
         for tool in (self.object_tool, self.trace_tool, self.edit_tool):
             tool.status_changed.connect(self._update_status)
         self._editing: bool = self.document.selection.mode != "objects"
@@ -800,10 +589,8 @@ class MainWindow(QMainWindow):
 
     def _show_tool(self, tool: Tool) -> None:
         """Activate `tool`, and fit the window around it."""
-        self.manual_hint_label.setText(tool.hint)
         tool.activate()
         self.canvas.set_interaction_handler(tool if tool.captures_mouse else None)
-        self._update_paint_radius_visibility()
         self._update_selection_actions()
         self._update_status()
 
@@ -820,7 +607,6 @@ class MainWindow(QMainWindow):
         self.object_tool.set_select_tool(name)
         self.edit_tool.set_select_tool(name)
         self._update_tool()
-        self._update_paint_radius_visibility()
 
     def _grab(self) -> None:
         """Switch to Move, and grab the selection with it from where the
@@ -828,9 +614,6 @@ class MainWindow(QMainWindow):
         self.move_tool_action.setChecked(True)
         self.canvas.setFocus()  # for the keys a grab takes: X, Y and Esc
         self.tool.start_grab(self.canvas.cursor_scene_pos())
-
-    def _update_paint_radius_visibility(self) -> None:
-        self.paint_radius_widget.setVisible(self.paint_select_action.isChecked())
 
     # ------------------------------------------------- document reactions
 
@@ -928,22 +711,12 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- edges
 
-    def _on_param_changed(self, *_args: object) -> None:
-        if self.image is None:
-            return
-        self._debounce.start(DEBOUNCE_MS)
-
     def _refresh_edge_source(self) -> None:
-        """Retrace the image's edges, for Pen to snap to, with the current
-        threshold and invert settings."""
+        """Retrace the image's edges, for Pen to snap to: between dark ink
+        and light paper, split where Otsu's method says."""
         if self.image is None:
             return
-        gray = self.image.grayscale
-        threshold = None if self.auto_threshold_checkbox.isChecked() else self.threshold_row.value()
-        if threshold is None:
-            threshold = binarize.otsu_threshold(gray)
-            self.threshold_row.setValue(threshold)
-        bitmap = binarize.binarize(gray, threshold=threshold, invert=self.invert_checkbox.isChecked())
+        bitmap = binarize.binarize(self.image.grayscale)
         # Lightly simplified, not raw crack-traced points: the raw boundary
         # can have single-pixel rasterization "spikes" right at a corner
         # (an artifact of how a sharp vertex rounds to the pixel grid), and
