@@ -15,6 +15,7 @@ from vectorize_image.document import (
     Remove,
     RemoveLayer,
     RenameLayer,
+    Rotate,
     Translate,
     VectorDrawing,
 )
@@ -84,6 +85,16 @@ def test_flip_and_back() -> None:
     history.redo()
     history.push(Flip(drawing, [a], "y", -1.0))
     assert np.allclose(drawing.position(a), (4, -2))
+
+
+def test_rotate_and_back() -> None:
+    drawing, a, b = _drawing_with_line()
+    history = History()
+
+    history.push(Rotate(drawing, [a, b], (5, 0), np.pi / 2))  # a quarter turn, clockwise on screen
+    assert np.allclose(drawing.position(a), (5, -5)) and np.allclose(drawing.position(b), (5, 5))
+    history.undo()
+    assert np.allclose(drawing.position(a), (0, 0)) and np.allclose(drawing.position(b), (10, 0))
 
 
 def test_a_new_push_forgets_what_could_be_redone() -> None:

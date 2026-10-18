@@ -41,14 +41,12 @@ def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozense
     return frozenset(points)
 
 
-def flip_elements(drawing: VectorDrawing, items: Iterable[Element], axis: Axis, text: str = "Flip") -> Flip | None:
-    """The command that flips the selected `items` along `axis` (along x
-    for a horizontal flip), across the middle of the box around them --
-    around the selected points themselves, or every point of the selected
-    lines or polygons, control points included -- or None if there's
-    nothing to flip. What's flipped is what a drag would move (see
-    points_to_move), so a selected point's control points go with it:
-    flipping a single point mirrors the curves' tangents at it."""
+def middle_of(drawing: VectorDrawing, items: Iterable[Element]) -> tuple[float, float] | None:
+    """The middle of the box around the selected `items` -- around the
+    selected points themselves (not the control points a drag carries
+    along with them), or every point of the selected lines or polygons,
+    control points included -- or None if there's nothing selected. What
+    a flip mirrors across, and a rotation turns around."""
     spanned: set[Point] = set()
     for item in items:
         match item:
@@ -60,9 +58,21 @@ def flip_elements(drawing: VectorDrawing, items: Iterable[Element], axis: Axis, 
                 spanned.update(item.points)
     if not spanned:
         return None
-    index = 0 if axis == "x" else 1
-    coordinates = [float(drawing.position(point)[index]) for point in spanned]
-    center = (min(coordinates) + max(coordinates)) / 2
+    positions = np.array([drawing.position(point) for point in spanned])
+    x, y = (positions.min(axis=0) + positions.max(axis=0)) / 2
+    return (float(x), float(y))
+
+
+def flip_elements(drawing: VectorDrawing, items: Iterable[Element], axis: Axis, text: str = "Flip") -> Flip | None:
+    """The command that flips the selected `items` along `axis` (along x
+    for a horizontal flip), across their middle (see middle_of) -- or
+    None if there's nothing to flip. What's flipped is what a drag would
+    move (see points_to_move), so a selected point's control points go
+    with it: flipping a single point mirrors the curves' tangents at it."""
+    middle = middle_of(drawing, items)
+    if middle is None:
+        return None
+    center = middle[0 if axis == "x" else 1]
     return Flip(drawing, points_to_move(drawing, items), axis, center, text)
 
 

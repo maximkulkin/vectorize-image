@@ -21,11 +21,11 @@ from .document import (
     RemoveLayer,
     RenameLayer,
 )
-from .history import Batch, Command, Flip, History, Insert, Remove, Translate
+from .history import Batch, Command, Flip, History, Insert, Remove, Rotate, Translate
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .selection import Selectable, Selection
-from .vector import BezierCurve, Element, Fragment, Line, Point, Polygon, VectorDrawing, duplicate
+from .vector import BezierCurve, Element, Fragment, Line, Point, Polygon, VectorDrawing, duplicate, rotated
 
 __all__ = [
     "Batch",
@@ -53,9 +53,11 @@ __all__ = [
     "RemoveItems",
     "RemoveLayer",
     "RenameLayer",
+    "Rotate",
     "Selectable",
     "Selection",
     "Translate",
     "VectorDrawing",
     "duplicate",
+    "rotated",
 ]

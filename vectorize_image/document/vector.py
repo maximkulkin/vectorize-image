@@ -487,6 +487,18 @@ class VectorDrawing:
             positions[point] = position
         self.place(positions)
 
+    def rotate(self, points: Iterable[Point], center: PointLike, angle: float) -> None:
+        """Turn points by `angle` radians around `center` -- clockwise on
+        screen, for a positive angle, as y grows downward. Lines stay
+        exact: a cubic's turned control points make the turned curve.
+        Rotating by -angle undoes it.
+        """
+        points = list(points)
+        if not points:
+            return
+        positions = np.array([self.position(point) for point in points])
+        self.place(dict(zip(points, rotated(positions, center, angle))))
+
     def place(self, positions: Mapping[Point, PointLike]) -> None:
         """Move points to the given absolute positions, as one change --
         and with them every line made from them and every polygon those
@@ -511,6 +523,14 @@ class VectorDrawing:
         for line in lines:
             polygons.update(dict.fromkeys(self._polygons_on[line]))
         self.reshaped.emit(frozenset([*points, *lines, *polygons]))
+
+
+def rotated(positions: np.ndarray, center: PointLike, angle: float) -> np.ndarray:
+    """`positions`, (n, 2), turned by `angle` radians around `center` (see VectorDrawing.rotate)."""
+    cos, sin = np.cos(angle), np.sin(angle)
+    origin = np.asarray(center, dtype=float)
+    offsets = np.asarray(positions, dtype=float) - origin
+    return origin + offsets @ np.array([[cos, sin], [-sin, cos]])
 
 
 def duplicate(fragment: Fragment) -> Fragment:

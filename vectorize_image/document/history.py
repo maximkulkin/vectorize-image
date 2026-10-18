@@ -4,7 +4,7 @@ pushed onto the document's History, which does it and can undo it.
 Commands are small and targeted -- each one stores just what its own
 change needs to reverse it (the elements it inserted, the fragment it
 removed, the distance it moved things, the line it mirrored them
-across), never a snapshot of the whole drawing.
+across, the angle it turned them by), never a snapshot of the whole drawing.
 """
 
 from __future__ import annotations
@@ -111,6 +111,28 @@ class Flip(Command):
     @override
     def undo(self) -> None:
         self.drawing.flip(self.points, self.axis, self.center)
+
+
+class Rotate(Command):
+    """Turn points around a center (see VectorDrawing.rotate); undo turns
+    them back."""
+
+    def __init__(
+        self, drawing: VectorDrawing, points: Iterable[Point], center: PointLike, angle: float, text: str = "Rotate"
+    ) -> None:
+        super().__init__(text)
+        self.drawing: Final[VectorDrawing] = drawing
+        self.points: Final[frozenset[Point]] = frozenset(points)
+        self.center: Final[np.ndarray] = np.array(center, dtype=float)
+        self.angle: Final[float] = angle
+
+    @override
+    def redo(self) -> None:
+        self.drawing.rotate(self.points, self.center, self.angle)
+
+    @override
+    def undo(self) -> None:
+        self.drawing.rotate(self.points, self.center, -self.angle)
 
 
 class Batch(Command):

@@ -10,7 +10,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image, ImageDraw  # noqa: E402
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -57,9 +58,17 @@ def press(window: MainWindow, x: float, y: float, shift: bool = False) -> None:
     QApplication.processEvents()
 
 
-def move(window: MainWindow, x: float, y: float) -> None:
+def move(window: MainWindow, x: float, y: float, shift: bool = False) -> None:
     vp = window.canvas.mapFromScene(float(x), float(y))
-    QTest.mouseMove(window.canvas.viewport(), vp)
+    viewport = window.canvas.viewport()
+    if shift:  # QTest drops modifiers from a move: send one ourselves
+        local, buttons = QPointF(vp), QApplication.mouseButtons()
+        event = QMouseEvent(
+            QEvent.Type.MouseMove, local, viewport.mapToGlobal(local), Qt.MouseButton.NoButton, buttons, _modifiers(shift)
+        )
+        QApplication.sendEvent(viewport, event)
+    else:
+        QTest.mouseMove(viewport, vp)
     QApplication.processEvents()
 
 

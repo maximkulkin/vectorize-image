@@ -53,6 +53,8 @@ class InteractionHandler(Protocol):
 
     def on_key(self, key: Qt.Key) -> bool: ...
 
+    def on_modifiers_changed(self) -> None: ...
+
 
 class Canvas(QGraphicsView):
     def __init__(self, document: Document, parent: QWidget | None = None) -> None:
@@ -61,6 +63,7 @@ class Canvas(QGraphicsView):
         scene.setParent(self)  # lives exactly as long as the canvas
         self._pan_zoom: PanZoom = PanZoom(self)
         self._interaction_handler: InteractionHandler | None = None
+        self._shift_held: bool = False
         # Without this, Qt only sends mouseMoveEvent while a button is held
         # down (i.e. during a drag) -- but manual tracing's live preview
         # needs to see plain cursor movement between clicks, with no button
@@ -93,13 +96,31 @@ class Canvas(QGraphicsView):
         `shift` is whether the Shift key was held at press-time (for
         toggling a selection). on_key gets every other key pressed (not
         repeats of one held down, and not the arrow keys, which pan) first,
-        and returns whether it took it.
+        and returns whether it took it. on_modifiers_changed hears of Shift
+        going down or up (see shift_held) without the mouse moving.
         """
         self._interaction_handler = handler
         self.setDragMode(QGraphicsView.DragMode.NoDrag if handler else QGraphicsView.DragMode.ScrollHandDrag)
 
+    @property
+    def shift_held(self) -> bool:
+        """Whether Shift is held down, as of the last mouse or key event on the canvas."""
+        return self._shift_held
+
+    def _note_shift(self, held: bool) -> None:
+        if held != self._shift_held:
+            self._shift_held = held
+            if self._interaction_handler is not None:
+                self._interaction_handler.on_modifiers_changed()
+
+    def _note_modifiers(self, event: QMouseEvent) -> None:
+        # Quietly: the handler hears of the event itself, right after.
+        self._shift_held = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
     @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Shift:
+            self._note_shift(True)
         handler = self._interaction_handler
         if handler is None:
             super().keyPressEvent(event)
@@ -109,13 +130,21 @@ class Canvas(QGraphicsView):
             super().keyPressEvent(event)
 
     @override
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
+            self._note_shift(False)
+        super().keyReleaseEvent(event)
+
+    @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._note_modifiers(event)
         if self._interaction_handler is not None:
             self._interaction_handler.on_move(self.mapToScene(event.position().toPoint()))
         super().mouseMoveEvent(event)
 
     @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        self._note_modifiers(event)
         if self._interaction_handler is not None and event.button() == Qt.MouseButton.LeftButton:
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             self._interaction_handler.on_press(self.mapToScene(event.position().toPoint()), shift)
@@ -124,6 +153,7 @@ class Canvas(QGraphicsView):
 
     @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._note_modifiers(event)
         if self._interaction_handler is not None and event.button() == Qt.MouseButton.LeftButton:
             self._interaction_handler.on_release(self.mapToScene(event.position().toPoint()))
             return
@@ -185,13 +215,13 @@ class Canvas(QGraphicsView):
         if item.scene() is self.scene():
             self.scene().removeItem(item)
 
-    def set_tool_cursor(self, shape: Qt.CursorShape | None) -> None:
-        """Show the mouse cursor as `shape` over the canvas, for what a
+    def set_tool_cursor(self, cursor: Qt.CursorShape | QCursor | None) -> None:
+        """Show the mouse cursor as `cursor` over the canvas, for what a
         tool would do there -- or, for None, as it is by default."""
-        if shape is None:
+        if cursor is None:
             self.viewport().unsetCursor()
         else:
-            self.viewport().setCursor(shape)
+            self.viewport().setCursor(cursor)
 
     # ----------------------------------------------------------- geometry
 

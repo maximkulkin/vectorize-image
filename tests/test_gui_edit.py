@@ -19,7 +19,7 @@ from vectorize_image.edit import points_to_move  # noqa: E402
 from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
 from vectorize_image.gui.overlays import CursorGuides  # noqa: E402
-from vectorize_image.gui.tools import HANDLE_CURSORS, MoveTool  # noqa: E402
+from vectorize_image.gui.tools import MoveTool, RotateTool, handle_cursor  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 CORNERS = [(40.0, 40.0), (110.0, 40.0), (110.0, 110.0), (40.0, 110.0)]
@@ -60,12 +60,12 @@ def _key(window: MainWindow, which: Qt.Key, modifiers: Qt.KeyboardModifier = Qt.
     QApplication.processEvents()
 
 
-def _grab(window: MainWindow, x: float, y: float) -> None:
-    """G, with the cursor at (x, y) on the canvas."""
+def _grab(window: MainWindow, x: float, y: float, which: Qt.Key = Qt.Key.Key_G) -> None:
+    """G -- or R, say -- with the cursor at (x, y) on the canvas."""
     move(window, x, y)
     canvas = window.canvas
     QCursor.setPos(canvas.viewport().mapToGlobal(canvas.mapFromScene(x, y)))
-    _key(window, Qt.Key.Key_G)
+    _key(window, which)
 
 
 def _move_tool(window: MainWindow) -> MoveTool[Element]:
@@ -408,7 +408,7 @@ def test_dragging_a_move_handle_moves_the_selection_along_its_axis(
     press(window, *start)
     move(window, start[0] + 10, start[1] + 6)
     held = tool.handles.highlight  # what's dragged stays highlighted, the cursor showing how it moves
-    assert held is not None and window.canvas.viewport().cursor().shape() == HANDLE_CURSORS[held]
+    assert held is not None and window.canvas.viewport().cursor().shape() == handle_cursor(held)
     assert tool.handles.pos().x() == pytest.approx(75 + moved[0], abs=TOLERANCE)  # following the drag
     assert tool.handles.pos().y() == pytest.approx(75 + moved[1], abs=TOLERANCE)
     release(window, start[0] + 10, start[1] + 6)
@@ -437,6 +437,137 @@ def test_g_switches_to_move_without_handles(window: MainWindow, diamond_path: st
     assert tool.grabbing and not tool.handles.isVisible()
     key(window, Qt.Key.Key_Escape)
     assert tool.handles.isVisible()
+
+
+# ---------------------------------------------------------------- rotate
+
+
+def _rotate_tool(window: MainWindow) -> RotateTool[Element]:
+    return window.edit_tool.rotate_tool
+
+
+def _select_square_to_rotate(window: MainWindow, diamond_path: str) -> tuple[VectorDrawing, Point]:
+    """The square, all selected in polygons mode; and its top-left corner."""
+    drawing, _ = _edit_square(window, diamond_path)
+    _key(window, Qt.Key.Key_3)
+    click(window, 75, 75)
+    return drawing, _point_at(drawing, CORNERS[0])
+
+
+QUARTER_TURN_TOLERANCE = 1.0  # the cursor's angle goes through whole viewport pixels
+
+
+def test_rotate_from_its_button_turns_the_selection_by_its_ring(window: MainWindow, diamond_path: str) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    window.rotate_tool_action.trigger()
+    tool = _rotate_tool(window)
+    assert window.edit_tool.select_tool is tool and not tool.grabbing
+    ring = tool.handles
+    assert ring.isVisible() and (ring.pos().x(), ring.pos().y()) == pytest.approx((75, 75))
+    scale = window.canvas.scene_distance(1.0)
+    right, below = (75 + 48 * scale, 75.0), (75.0, 75 + 48 * scale)
+
+    move(window, 75 + 30 * scale, 75)  # inside the ring: not on it
+    assert ring.highlight is None
+    move(window, *right)
+    assert ring.highlight == "rotate"
+    assert window.canvas.viewport().cursor().shape() == Qt.CursorShape.BitmapCursor  # the rotate cursor
+
+    press(window, *right)
+    move(window, *below)  # a quarter turn, clockwise on screen
+    assert np.allclose(drawing.position(corner), CORNERS[0])  # previewed, not turned yet
+    assert np.degrees(tool.angle) == pytest.approx(90, abs=1)
+    assert (ring.pos().x(), ring.pos().y()) == pytest.approx((75, 75))  # what it turns around stays put
+    release(window, *below)
+
+    assert np.allclose(drawing.position(corner), CORNERS[1], atol=QUARTER_TURN_TOLERANCE)
+    assert window.document.history.undo_text() == "Rotate Polygons"
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+
+
+def test_rotate_from_its_button_selects_as_tweak_does(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    window.rotate_tool_action.trigger()
+
+    click(window, *CORNERS[0])
+    click(window, *CORNERS[1], shift=True)
+    assert window.document.selection.items == {_point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])}
+    click(window, 75, 140)  # off the ring, on nothing: deselects
+    assert not window.document.selection
+    assert not _rotate_tool(window).handles.isVisible()
+
+
+def test_r_rotates_the_selection_with_the_cursor_until_a_click(window: MainWindow, diamond_path: str) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    _grab(window, 125, 75, Qt.Key.Key_R)
+    tool = _rotate_tool(window)
+    assert window.rotate_tool_action.isChecked() and window.edit_tool.select_tool is tool
+    assert tool.grabbing and not tool.handles.isVisible()
+    assert _drawing_item(window, drawing).grabbed
+
+    move(window, 75, 125)  # turning, no button held
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+    assert "rotating 1 polygon by 90° · Shift to snap to 15°, click to place" in window.statusBar().currentMessage()
+    click(window, 75, 125)
+
+    assert not tool.grabbing and not tool.handles.isVisible()
+    assert np.allclose(drawing.position(corner), CORNERS[1], atol=QUARTER_TURN_TOLERANCE)
+    window.undo_action.trigger()
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+
+
+def _at_degrees(degrees: float, radius: float = 50.0) -> tuple[float, float]:
+    """Where, around the square's middle, `degrees` clockwise from straight right is."""
+    angle = np.radians(degrees)
+    return (75 + radius * float(np.cos(angle)), 75 + radius * float(np.sin(angle)))
+
+
+def test_shift_snaps_a_rotation_to_15_degree_steps(window: MainWindow, diamond_path: str) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    _grab(window, *_at_degrees(0), Qt.Key.Key_R)
+    tool = _rotate_tool(window)
+
+    move(window, *_at_degrees(40))
+    assert np.degrees(tool.angle) == pytest.approx(40, abs=1)
+    QTest.keyPress(window.canvas, Qt.Key.Key_Shift)  # snaps, the mouse still
+    assert np.degrees(tool.angle) == pytest.approx(45)
+    QTest.keyRelease(window.canvas, Qt.Key.Key_Shift)
+    assert np.degrees(tool.angle) == pytest.approx(40, abs=1)
+
+    move(window, *_at_degrees(50), shift=True)
+    assert np.degrees(tool.angle) == pytest.approx(45)
+    click(window, *_at_degrees(50), shift=True)
+
+    # The top-left corner, 45 degrees on: straight above the middle, as far from it as ever.
+    assert np.allclose(drawing.position(corner), (75, 75 - 35 * np.sqrt(2)))
+
+
+def test_escape_cancels_a_rotation(window: MainWindow, diamond_path: str) -> None:
+    drawing, corner = _select_square_to_rotate(window, diamond_path)
+    _grab(window, 125, 75, Qt.Key.Key_R)
+    move(window, 75, 125)
+
+    key(window, Qt.Key.Key_Escape)
+
+    assert not _rotate_tool(window).grabbing and not _drawing_item(window, drawing).grabbed
+    assert np.allclose(drawing.position(corner), CORNERS[0])
+    assert not window.document.history.can_undo()
+    assert window.document.selection  # kept: only the rotation is cancelled
+
+
+def test_rotating_points_turns_them_around_their_own_middle(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])
+    click(window, *CORNERS[1], shift=True)  # the top edge's ends: their middle is (75, 40)
+    first, second = _point_at(drawing, CORNERS[0]), _point_at(drawing, CORNERS[1])
+    _grab(window, 75, 0, Qt.Key.Key_R)  # straight above the middle
+
+    click(window, 75, 80)  # straight below: half a turn
+
+    assert np.allclose(drawing.position(first), CORNERS[1], atol=QUARTER_TURN_TOLERANCE)
+    assert np.allclose(drawing.position(second), CORNERS[0], atol=QUARTER_TURN_TOLERANCE)
+    assert window.document.history.undo_text() == "Rotate Points"
 
 
 def test_g_grabs_the_selection_to_move_with_the_cursor_until_a_click(window: MainWindow, diamond_path: str) -> None:

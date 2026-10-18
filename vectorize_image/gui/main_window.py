@@ -12,7 +12,11 @@ points, lines or polygons. Move's toolbar button brings it up with
 handles on the selection -- arrows to drag it along X or Y, and a disc in
 the middle to drag it freely -- selecting, off them, as Tweak does. G, as in Blender, grabs the selection in
 either mode instead: it moves with the cursor until a click places it --
-and switching to Move that way, it comes up without the handles. Edit Mode
+and switching to Move that way, it comes up without the handles. Rotate
+is the same, turning instead of moving -- vector drawings only, never
+images -- around the middle of the selection: its button brings up a
+ring to drag around that, and R turns the selection with the cursor
+until a click, without it. Edit Mode
 toggles on and off -- Tab, as in Blender too, goes into it and back out to
 object mode.
 
@@ -33,6 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence
@@ -99,6 +104,8 @@ class MainWindow(QMainWindow):
     paint_select_action: QAction
     move_tool_action: QAction
     grab_action: QAction
+    rotate_tool_action: QAction
+    rotate_action: QAction
     _select_tool_actions: tuple[QAction, ...]
     select_tool_button: QToolButton
     _selection_toolbar_separator: QAction
@@ -314,22 +321,38 @@ class MainWindow(QMainWindow):
         # and a grab of the selection at once.
         self.grab_action = QAction("&Grab", self)
         self.grab_action.setShortcut(QKeySequence(Qt.Key.Key_G))
-        self.grab_action.triggered.connect(self._grab)
+        self.grab_action.triggered.connect(lambda: self._grab(self.move_tool_action, "move"))
         self.addAction(self.grab_action)
+        self.rotate_tool_action = QAction(themed_icon("rotate"), "&Rotate", self)
+        self.rotate_tool_action.setCheckable(True)
+        self.rotate_tool_action.setToolTip(
+            (
+                "Rotate (R): drag the ring around the selection to rotate its drawings around their middle; "
+                "click to select, shift-click for more, or drag something to rotate it. R rotates the "
+                "selection with the cursor instead, without the ring -- click to place it, Esc to cancel"
+            )
+        )
+        # R, as G is for Move: Rotate and a grab, turning the selection, at once.
+        self.rotate_action = QAction("Rotate &Selection", self)
+        self.rotate_action.setShortcut(QKeySequence(Qt.Key.Key_R))
+        self.rotate_action.triggered.connect(lambda: self._grab(self.rotate_tool_action, "rotate"))
+        self.addAction(self.rotate_action)
         self.trace_tool_action = QAction(themed_icon("pen"), "&Pen", self)
         self.trace_tool_action.setCheckable(True)
         self.trace_tool_action.setToolTip("Pen: click to place points, snapped to the nearest edge, in the current layer")
 
         self._tool_action_group = QActionGroup(self)
         self._tool_action_group.setExclusive(True)
-        for action in (*self._select_tool_actions, self.move_tool_action, self.trace_tool_action):
+        for action in (*self._select_tool_actions, self.move_tool_action, self.rotate_tool_action, self.trace_tool_action):
             self._tool_action_group.addAction(action)
         _when_checked(self.tweak_action, lambda: self._set_select_tool("tweak", self.tweak_action))
         _when_checked(self.box_select_action, lambda: self._set_select_tool("box", self.box_select_action))
         _when_checked(self.paint_select_action, lambda: self._set_select_tool("paint", self.paint_select_action))
         _when_checked(self.move_tool_action, lambda: self._set_select_tool("move"))
-        # Only the button (or menu) triggers it: G checks it, without handles.
-        self.move_tool_action.triggered.connect(lambda: self._set_move_handles(True))
+        _when_checked(self.rotate_tool_action, lambda: self._set_select_tool("rotate"))
+        # Only the buttons trigger them: G and R check them, without handles.
+        self.move_tool_action.triggered.connect(lambda: self._set_handles("move", True))
+        self.rotate_tool_action.triggered.connect(lambda: self._set_handles("rotate", True))
         self.trace_tool_action.toggled.connect(self._update_tool)
 
         # The select tools share one toolbar button, showing the one in use,
@@ -411,6 +434,7 @@ class MainWindow(QMainWindow):
         tools_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         tools_toolbar.addWidget(self.select_tool_button)
         tools_toolbar.addAction(self.move_tool_action)
+        tools_toolbar.addAction(self.rotate_tool_action)
         tools_toolbar.addAction(self.trace_tool_action)
         tools_toolbar.addSeparator()
         tools_toolbar.addAction(self.edit_tool_action)
@@ -608,18 +632,19 @@ class MainWindow(QMainWindow):
         self.edit_tool.set_select_tool(name)
         self._update_tool()
 
-    def _set_move_handles(self, shown: bool) -> None:
-        """Show Move's handles, or don't, in both modes (see MoveTool.set_handles)."""
-        self.object_tool.move_tool.set_handles(shown)
-        self.edit_tool.move_tool.set_handles(shown)
+    def _set_handles(self, name: Literal["move", "rotate"], shown: bool) -> None:
+        """Show Move's or Rotate's handles, or don't, in both modes (see MoveTool.set_handles)."""
+        for mode_tool in (self.object_tool, self.edit_tool):
+            tool = mode_tool.move_tool if name == "move" else mode_tool.rotate_tool
+            tool.set_handles(shown)
 
-    def _grab(self) -> None:
-        """Switch to Move -- without its handles, unless it's on already
-        -- and grab the selection with it from where the cursor is (see
-        MoveTool.start_grab)."""
-        if not self.move_tool_action.isChecked():
-            self._set_move_handles(False)
-        self.move_tool_action.setChecked(True)
+    def _grab(self, action: QAction, name: Literal["move", "rotate"]) -> None:
+        """Switch to Move or Rotate, by its `action` -- without its
+        handles, unless it's on already -- and grab the selection with it
+        from where the cursor is (see MoveTool.start_grab)."""
+        if not action.isChecked():
+            self._set_handles(name, False)
+        action.setChecked(True)
         self.canvas.setFocus()  # for the keys a grab takes: X, Y and Esc
         self.tool.start_grab(self.canvas.cursor_scene_pos())
 

@@ -158,11 +158,11 @@ def test_tab_toggles_edit_mode(window: MainWindow, diamond_path: str) -> None:
     assert window.tool is window.object_tool
 
 
-def test_select_tools_share_a_dropdown_before_move_and_pen(window: MainWindow) -> None:
+def test_select_tools_share_a_dropdown_before_move_rotate_and_pen(window: MainWindow) -> None:
     toolbar = next(bar for bar in window.findChildren(QToolBar) if bar.windowTitle() == "Tools")
-    first, second, third = toolbar.actions()[:3]
+    first, *rest = toolbar.actions()[:4]
     assert toolbar.widgetForAction(first) is window.select_tool_button
-    assert (second, third) == (window.move_tool_action, window.trace_tool_action)
+    assert rest == [window.move_tool_action, window.rotate_tool_action, window.trace_tool_action]
 
     menu = window.select_tool_button.menu()
     assert menu is not None
@@ -343,10 +343,47 @@ def test_move_from_its_button_selects_and_deselects_objects(window: MainWindow, 
 
 def _grab(window: MainWindow, x: float, y: float) -> None:
     """G, with the cursor at (x, y) on the canvas."""
+    _shortcut_at(window, x, y, Qt.Key.Key_G)
+
+
+def test_r_rotates_the_selected_drawings_around_their_middle(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    other = _add_square(window, 100)
+    before, other_before = _positions(drawing), _positions(other)
+    click(window, 55, 55)
+    click(window, 115, 115, shift=True)  # the squares span 40 to 130: their middle is (85, 85)
+
+    _shortcut_at(window, 85, 40, Qt.Key.Key_R)  # straight above the middle
+    tool = window.object_tool.rotate_tool
+    assert window.object_tool.select_tool is tool and tool.grabbing
+    click(window, 85, 130)  # straight below: half a turn
+
+    assert np.allclose(_positions(drawing), 170 - before, atol=1.0)
+    assert np.allclose(_positions(other), 170 - other_before, atol=1.0)
+    assert window.document.history.undo_text() == "Rotate Objects"
+    window.undo_action.trigger()
+    assert np.allclose(_positions(drawing), before) and np.allclose(_positions(other), other_before)
+
+
+def test_images_dont_rotate(window: MainWindow, diamond_path: str) -> None:
+    image, _ = _open_with_square(window, diamond_path)
+    window.document.current_layer = _layer(window, "Image")
+    click(window, 75, 75)
+    assert window.document.selection.items == {image}
+
+    window.rotate_tool_action.trigger()
+    tool = window.object_tool.rotate_tool
+    assert not tool.handles.isVisible()  # nothing to turn: no ring
+    _shortcut_at(window, 100, 75, Qt.Key.Key_R)
+    assert window.object_tool.select_tool is tool and not tool.grabbing
+
+
+def _shortcut_at(window: MainWindow, x: float, y: float, which: Qt.Key) -> None:
+    """A shortcut that works where the cursor is -- at (x, y) on the canvas."""
     move(window, x, y)
     canvas = window.canvas
     QCursor.setPos(canvas.viewport().mapToGlobal(canvas.mapFromScene(x, y)))
-    _shortcut(window, Qt.Key.Key_G)
+    _shortcut(window, which)
 
 
 def test_g_grabs_the_selected_objects_until_a_click(window: MainWindow, diamond_path: str) -> None:

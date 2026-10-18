@@ -1,7 +1,7 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
 curve and snap ring, the Edit tool's hover/drag highlights and the point Add Point would add, the box,
 guides and brush of the area select tools, object mode's hover highlight
-and boxes around images, a grab's axis guide, and the Move tool's handles. Built from stock Qt graphics items so their
+and boxes around images, a grab's axis guide, and the Move and Rotate tools' handles. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
 cosmetic pens, or ignores the view transform entirely, so it keeps a fixed
 on-screen size at any zoom.
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..document import Element, Line, Point, Polygon, VectorDrawing
-from ..typedefs import Axis, Bezier, MoveHandle, PointLike
+from ..typedefs import Axis, Bezier, PointLike, TransformHandle
 from .document_items import LINE_WIDTH_PX, POINT_RADIUS_PX, bezier_path
 
 PREVIEW_COLOR = QColor(255, 214, 0)
@@ -50,7 +50,15 @@ MOVE_ARROW_HEAD_HALF_WIDTH_PX = 6.0
 MOVE_ARROW_WIDTH_PX = 2.5
 MOVE_HANDLE_REACH_PX = 4.0  # how far past a handle a press still takes it
 MOVE_CENTER_COLOR = QColor(255, 255, 255)
-MOVE_HANDLE_BACKING_COLOR = QColor(0, 0, 0, 140)  # around the handles, to show on light areas too
+HANDLE_BACKING_COLOR = QColor(0, 0, 0, 140)  # around the handles, to show on light areas too
+
+# The Rotate tool's handle, on screen: a ring around the middle, and a dot
+# on the middle, which it turns around.
+ROTATE_RING_RADIUS_PX = 48.0
+ROTATE_RING_WIDTH_PX = 2.5
+ROTATE_RING_REACH_PX = 6.0  # how far off the ring, either way, a press still takes it
+ROTATE_PIVOT_RADIUS_PX = 2.5
+ROTATE_RING_COLOR = QColor(255, 255, 255)
 
 
 def cosmetic_pen(color: QColor, width: float, style: Qt.PenStyle = Qt.PenStyle.SolidLine) -> QPen:
@@ -297,34 +305,47 @@ class BrushOutline(QGraphicsEllipseItem):
         self.show()
 
 
-class MoveHandles(QGraphicsItem):
-    """The Move tool's handles, around the middle of the selection: a disc
-    to drag it freely, and arrows -- red along X, green along Y -- to drag
-    it along just that axis. Drawn in screen space, a fixed size at any
-    zoom; the one under the cursor, or being dragged, highlighted."""
+class Handles(QGraphicsItem):
+    """A transform tool's handles, around the middle of the selection.
+    Drawn in screen space, a fixed size at any zoom; the one under the
+    cursor, or being dragged, highlighted. Subclasses draw them and say
+    where they are."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
-        self._highlight: MoveHandle | None = None
+        self._highlight: TransformHandle | None = None
         self.hide()
 
     @property
-    def highlight(self) -> MoveHandle | None:
+    def highlight(self) -> TransformHandle | None:
         return self._highlight
 
     def show_at(self, pos: PointLike) -> None:
         self.setPos(_point(pos))
         self.show()
 
-    def set_highlight(self, handle: MoveHandle | None) -> None:
+    def set_highlight(self, handle: TransformHandle | None) -> None:
         if handle != self._highlight:
             self._highlight = handle
             self.update()
 
-    @staticmethod
-    def handle_at(offset_px: tuple[float, float]) -> MoveHandle | None:
+    def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
         """The handle at `offset_px` from the middle, on screen -- if any."""
+        del offset_px  # each kind of handles knows where its own are
+        raise NotImplementedError
+
+    def _color(self, handle: TransformHandle, color: QColor) -> QColor:
+        return ACTIVE_COLOR if handle == self._highlight else color
+
+
+class MoveHandles(Handles):
+    """The Move tool's handles: a disc to drag the selection freely, and
+    arrows -- red along X, green along Y -- to drag it along just that
+    axis."""
+
+    @override
+    def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
         x, y = offset_px
         reach = MOVE_HANDLE_REACH_PX
         if x * x + y * y <= (MOVE_CENTER_RADIUS_PX + reach) ** 2:
@@ -349,13 +370,10 @@ class MoveHandles(QGraphicsItem):
         for axis, direction in arrows:
             self._paint_arrow(painter, direction, self._color(axis, AXIS_COLORS[axis]))
         # Plain pens, not cosmetic: with the view transform ignored, they're already in screen pixels.
-        painter.setPen(QPen(MOVE_HANDLE_BACKING_COLOR, 1.5))
+        painter.setPen(QPen(HANDLE_BACKING_COLOR, 1.5))
         painter.setBrush(self._color("center", MOVE_CENTER_COLOR))
         painter.drawEllipse(QPointF(0.0, 0.0), MOVE_CENTER_RADIUS_PX, MOVE_CENTER_RADIUS_PX)
         painter.restore()
-
-    def _color(self, handle: MoveHandle, color: QColor) -> QColor:
-        return ACTIVE_COLOR if handle == self._highlight else color
 
     def _paint_arrow(self, painter: QPainter, direction: QPointF, color: QColor) -> None:
         """An arrow from the middle along `direction`, a unit vector."""
@@ -365,10 +383,40 @@ class MoveHandles(QGraphicsItem):
         base = direction * (MOVE_ARROW_TIP_PX - MOVE_ARROW_HEAD_PX)
         half = across * MOVE_ARROW_HEAD_HALF_WIDTH_PX
         head = QPolygonF([tip, base + half, base - half])
-        backing = QPen(MOVE_HANDLE_BACKING_COLOR, MOVE_ARROW_WIDTH_PX + 2.0)
+        backing = QPen(HANDLE_BACKING_COLOR, MOVE_ARROW_WIDTH_PX + 2.0)
         backing.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        for pen, brush in ((backing, MOVE_HANDLE_BACKING_COLOR), (QPen(color, MOVE_ARROW_WIDTH_PX), color)):
+        for pen, brush in ((backing, HANDLE_BACKING_COLOR), (QPen(color, MOVE_ARROW_WIDTH_PX), color)):
             painter.setPen(pen)
             painter.drawLine(start, base)
             painter.setBrush(brush)
             painter.drawPolygon(head)
+
+
+class RotateHandle(Handles):
+    """The Rotate tool's handle: a ring around the middle of the
+    selection, to drag it around that, and a dot on the middle."""
+
+    @override
+    def handle_at(self, offset_px: tuple[float, float]) -> TransformHandle | None:
+        distance = float(np.hypot(*offset_px))
+        return "rotate" if abs(distance - ROTATE_RING_RADIUS_PX) <= ROTATE_RING_REACH_PX else None
+
+    @override
+    def boundingRect(self) -> QRectF:
+        reach = ROTATE_RING_RADIUS_PX + ROTATE_RING_WIDTH_PX + 2.0
+        return QRectF(-reach, -reach, 2 * reach, 2 * reach)
+
+    @override
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        painter.save()
+        center, radius = QPointF(0.0, 0.0), ROTATE_RING_RADIUS_PX
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # Plain pens, not cosmetic: with the view transform ignored, they're already in screen pixels.
+        painter.setPen(QPen(HANDLE_BACKING_COLOR, ROTATE_RING_WIDTH_PX + 2.0))
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(QPen(self._color("rotate", ROTATE_RING_COLOR), ROTATE_RING_WIDTH_PX))
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(QPen(HANDLE_BACKING_COLOR, 1.0))
+        painter.setBrush(ROTATE_RING_COLOR)
+        painter.drawEllipse(center, ROTATE_PIVOT_RADIUS_PX, ROTATE_PIVOT_RADIUS_PX)
+        painter.restore()
