@@ -12,7 +12,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGraphicsItem  # noqa: E402
 
 from conftest import click, drag, key, move, press, release  # noqa: E402
 from vectorize_image.document import Element, Line, Point, Polygon, VectorDrawing  # noqa: E402
@@ -84,6 +84,10 @@ def _shown_at(window: MainWindow, drawing: VectorDrawing, point: Point) -> np.nd
     """Where the canvas shows `point`, move preview included."""
     line = next(line for line in drawing.lines if point in (line.start, line.end))
     return _drawing_item(window, drawing).bezier(line)[0 if line.start is point else 3]
+
+
+def _xy(item: QGraphicsItem) -> tuple[float, float]:
+    return (item.pos().x(), item.pos().y())
 
 
 def _line_between(drawing: VectorDrawing, a: tuple[float, float], b: tuple[float, float]) -> Line:
@@ -504,6 +508,73 @@ def test_ctrl_l_selects_connected_points_and_lines(window: MainWindow, diamond_p
     _key(window, Qt.Key.Key_3)
     click(window, 75, 75)
     assert not window.select_connected_action.isEnabled()
+
+
+def test_a_adds_a_point_on_the_hovered_curve_with_one_click(window: MainWindow, diamond_path: str) -> None:
+    drawing, polygon = _edit_square(window, diamond_path)
+    top = _line_between(drawing, CORNERS[0], CORNERS[1])
+    move(window, 60, 41.5)  # a little below the top edge
+    _key(window, Qt.Key.Key_A)
+    tool = window.edit_tool.add_point_tool
+    assert window.edit_tool.operation is tool
+    assert "click a line" in window.statusBar().currentMessage()
+
+    move(window, 80, 41.5)
+    assert tool.target is not None and tool.target[0] is top
+    assert tool.marker.isVisible() and np.allclose(_xy(tool.marker), (80, 40), atol=TOLERANCE)
+    assert len(drawing.points) == 4 * 3  # only previewed
+
+    click(window, 80, 41.5)
+    added = _point_at(drawing, (80, 40))
+    assert top not in drawing and polygon not in drawing and len(drawing.polygons) == 1
+    assert drawing.degree(added) == 2 and len(drawing.lines) == 5
+    assert window.edit_tool.operation is None and not tool.marker.isVisible()  # done: back to Tweak
+    assert window.document.history.undo_text() == "Add Point"
+
+    window.undo_action.trigger()
+    assert top in drawing and polygon in drawing and len(drawing.points) == 4 * 3
+
+
+def test_adding_a_point_waits_for_a_line_and_escape_cancels(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    move(window, 75, 75)
+    _key(window, Qt.Key.Key_A)
+    tool = window.edit_tool.add_point_tool
+    assert not tool.marker.isVisible()
+
+    click(window, 75, 75)  # inside the square, nowhere near a line: nothing to add, still adding
+    assert window.edit_tool.operation is tool and not window.document.history.can_undo()
+    move(window, *CORNERS[1])  # right on an end: nothing to split there either
+    assert not tool.marker.isVisible()
+
+    key(window, Qt.Key.Key_Escape)
+    assert window.edit_tool.operation is None
+    assert len(drawing.points) == 4 * 3 and not window.document.history.can_undo()
+
+
+def test_adding_a_point_keeps_a_split_line_selected_as_its_halves(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    _key(window, Qt.Key.Key_2)
+    click(window, 75, 40)
+    top = _line_between(drawing, CORNERS[0], CORNERS[1])
+    assert window.document.selection.items == {top}
+
+    move(window, 60, 40)
+    _key(window, Qt.Key.Key_A)
+    click(window, 60, 40)
+
+    middle = (60.0, 40.0)
+    assert window.document.selection.items == {
+        _line_between(drawing, CORNERS[0], middle),
+        _line_between(drawing, middle, CORNERS[1]),
+    }
+
+
+def test_add_point_is_only_for_edit_mode(window: MainWindow, diamond_path: str) -> None:
+    _edit_square(window, diamond_path)
+    assert window.add_point_action.isEnabled()
+    window.edit_tool_action.setChecked(False)
+    assert not window.add_point_action.isEnabled()
 
 
 def test_switching_selection_mode_clears_the_selection(window: MainWindow, diamond_path: str) -> None:

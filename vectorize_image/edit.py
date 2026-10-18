@@ -1,19 +1,21 @@
 """What the Edit tool's moves and deletes take along, and which control
 points it shows, for a selection in each mode -- and how a shift-drag of
 one swings its partner around. Qt-free; the tool turns these into
-commands, and the canvas into handles.
+commands, and the canvas into handles. Also how adding a point splits a
+line in two (`split_line`), which comes with its command ready-made.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import assert_never
 
 import numpy as np
 
-from .document import BezierCurve, Element, Line, Point, Polygon, VectorDrawing
+from .document import Batch, BezierCurve, Command, Element, Fragment, Insert, Line, Point, Polygon, Remove, VectorDrawing
 from .document.hit_test import is_control
-from .typedefs import ElementMode, PointLike
+from .typedefs import Bezier, ElementMode, PointLike
 
 
 def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozenset[Point]:
@@ -196,3 +198,75 @@ def _polygons_within(drawing: VectorDrawing, lines: set[Line]) -> set[Polygon]:
         for polygon in drawing.polygons_on(line)
         if all(other in lines for other in polygon.lines)
     }
+
+
+def split_bezier(bezier: Bezier, t: float) -> tuple[Bezier, Bezier]:
+    """The two cubics that together trace `bezier` exactly, meeting at its
+    point at parameter t (de Casteljau's construction)."""
+    p0, p1, p2, p3 = (np.asarray(point, dtype=float) for point in bezier)
+    p01, p12, p23 = p0 + (p1 - p0) * t, p1 + (p2 - p1) * t, p2 + (p3 - p2) * t
+    p012, p123 = p01 + (p12 - p01) * t, p12 + (p23 - p12) * t
+    middle = p012 + (p123 - p012) * t
+    return [p0, p01, p012, middle], [middle, p123, p23, p3]
+
+
+@dataclass(frozen=True)
+class Split:
+    """Adding a point to a line, splitting it in two: what `command` puts
+    in place of the line, and of the polygons it bounds (a polygon's
+    rings never change, so each one is replaced by another with the
+    halves in its place)."""
+
+    point: Point
+    halves: tuple[Line, Line]  # from the line's start to `point`, and on to its end
+    polygons: Mapping[Polygon, Polygon]  # each polygon the line bounded, and the one taking its place
+    command: Command
+
+
+def split_line(drawing: VectorDrawing, line: Line, t: float) -> Split:
+    """Split `line` at its point at parameter t, 0 < t < 1, into two lines
+    meeting at a new point there. A curve splits into two curves, each
+    with new control points of its own, that trace it exactly (see
+    split_bezier); a straight line, into two straight ones. The line's
+    own control points go with it, unless another line uses them. Nothing
+    changes until the command is pushed. Raises ValueError for a t
+    outside (0, 1), and KeyError if `line` isn't in the drawing.
+    """
+    if not 0.0 < t < 1.0:
+        raise ValueError(f"a line is split strictly between its ends, not at t={t}")
+    first, second = split_bezier(drawing.bezier(line), t)
+    middle = Point()
+    points: dict[Point, np.ndarray] = {middle: first[3]}
+
+    def new_point(position: np.ndarray) -> Point:
+        point = Point()
+        points[point] = position
+        return point
+
+    halves: tuple[Line, Line]
+    if isinstance(line, BezierCurve):
+        halves = (
+            BezierCurve(line.start, middle, new_point(first[1]), new_point(first[2])),
+            BezierCurve(middle, line.end, new_point(second[1]), new_point(second[2])),
+        )
+    else:
+        halves = (Line(line.start, middle), Line(middle, line.end))
+
+    polygons = {
+        polygon: Polygon([_ring_with(ring, line, halves) for ring in polygon.walk()]) for polygon in drawing.polygons_on(line)
+    }
+    fragment = Fragment(points, list(halves), list(polygons.values()))
+    command = Batch([Remove(drawing, [line]), Insert(drawing, fragment)], "Add Point")
+    return Split(middle, halves, polygons, command)
+
+
+def _ring_with(ring: list[tuple[Line, bool]], line: Line, halves: tuple[Line, Line]) -> list[Line]:
+    """A polygon ring's lines, walked in order (see Polygon.walk), with
+    `halves` in place of `line` -- in the order the walk meets them."""
+    lines: list[Line] = []
+    for each, reverse in ring:
+        if each is line:
+            lines.extend(halves[::-1] if reverse else halves)
+        else:
+            lines.append(each)
+    return lines

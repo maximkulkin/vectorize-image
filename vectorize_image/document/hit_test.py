@@ -22,14 +22,40 @@ from .vector import Element, Line, Point, Polygon, VectorDrawing
 
 
 SAMPLES_PER_LINE = 21
+CLOSEST_REFINEMENTS = 3  # rounds of sampling ever closer around the closest sample (see closest_on_bezier)
+
+
+def _basis(t: np.ndarray) -> np.ndarray:
+    """Bernstein weights: points at parameters `t` = _basis(t) @ [P0, P1, P2, P3]."""
+    return np.stack([(1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t**2, t**3], axis=1)
+
+
 _T = np.linspace(0.0, 1.0, SAMPLES_PER_LINE)
-# Bernstein weights: samples = _BASIS @ [P0, P1, P2, P3].
-_BASIS = np.stack([(1 - _T) ** 3, 3 * (1 - _T) ** 2 * _T, 3 * (1 - _T) * _T**2, _T**3], axis=1)
+_BASIS = _basis(_T)
 
 
 def sample(bezier: Bezier) -> np.ndarray:
     """Points along a bezier, (SAMPLES_PER_LINE, 2), both ends included."""
     return _BASIS @ np.array(bezier)
+
+
+def closest_on_bezier(bezier: Bezier, pos: PointLike) -> tuple[float, float]:
+    """The parameter t of the bezier's point closest to `pos`, and how far
+    that point is from it. Found by sampling, then sampling again around
+    the closest sample, each round a step of the last one's either way --
+    close enough to put a point on the curve under the cursor."""
+    pos = np.asarray(pos, dtype=float)
+    controls = np.array(bezier)
+    lo, hi = 0.0, 1.0
+    best_t, best_dist = 0.0, float("inf")
+    for _ in range(CLOSEST_REFINEMENTS):
+        t = np.linspace(lo, hi, SAMPLES_PER_LINE)
+        dists = np.linalg.norm(_basis(t) @ controls - pos, axis=1)
+        i = int(np.argmin(dists))
+        best_t, best_dist = float(t[i]), float(dists[i])
+        step = (hi - lo) / (SAMPLES_PER_LINE - 1)
+        lo, hi = max(0.0, best_t - step), min(1.0, best_t + step)
+    return best_t, best_dist
 
 
 def is_control(drawing: VectorDrawing, point: Point) -> bool:
@@ -79,6 +105,22 @@ def nearest_line(drawing: VectorDrawing, pos: PointLike, radius: float) -> Line 
         dist = float(np.min(np.linalg.norm(sample(drawing.bezier(line)) - pos, axis=1)))
         if dist <= best_dist:
             best, best_dist = line, dist
+    return best
+
+
+def closest_on_line(drawing: VectorDrawing, pos: PointLike, radius: float) -> tuple[Line, float] | None:
+    """The line passing closest to `pos`, within `radius`, and the
+    parameter t of its point closest to `pos` (see closest_on_bezier)."""
+    pos = np.asarray(pos, dtype=float)
+    best: tuple[Line, float] | None = None
+    best_dist = radius
+    for line in drawing.lines:
+        bezier = drawing.bezier(line)
+        if float(np.min(np.linalg.norm(sample(bezier) - pos, axis=1))) > radius:
+            continue  # nowhere near: not worth refining
+        t, dist = closest_on_bezier(bezier, pos)
+        if dist <= best_dist:
+            best, best_dist = (line, t), dist
     return best
 
 

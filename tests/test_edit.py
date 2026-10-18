@@ -1,7 +1,18 @@
 import numpy as np
+import pytest
 
-from vectorize_image.document import BezierCurve, Line, Point, VectorDrawing
-from vectorize_image.edit import controls_shown, elements_connected, elements_to_delete, mirrored_partner, points_to_move
+from vectorize_image.curve_fit import bezier_point
+from vectorize_image.document import BezierCurve, History, Line, Point, VectorDrawing
+from vectorize_image.edit import (
+    controls_shown,
+    elements_connected,
+    elements_to_delete,
+    mirrored_partner,
+    points_to_move,
+    split_bezier,
+    split_line,
+)
+from vectorize_image.typedefs import Bezier
 
 
 def _curve(drawing: VectorDrawing, start: Point, end: Point) -> Line:
@@ -142,3 +153,84 @@ def test_nothing_connects_to_polygons() -> None:
     right = drawing.add_polygon([[ab, bc, ac]])
 
     assert elements_connected(drawing, "polygons", [right, a]) == {right}
+
+
+def _traces(halves: tuple[Bezier, Bezier], bezier: Bezier, t: float) -> bool:
+    """Whether `halves` trace `bezier` exactly, meeting at its point at t."""
+    first, second = halves
+    return all(
+        np.allclose(bezier_point(first, u), bezier_point(bezier, u * t))
+        and np.allclose(bezier_point(second, u), bezier_point(bezier, t + u * (1 - t)))
+        for u in np.linspace(0, 1, 11)
+    )
+
+
+def test_split_bezier_traces_the_original_exactly() -> None:
+    bezier = [np.array(p, dtype=float) for p in [(0, 0), (0, 10), (10, 10), (10, 0)]]
+    for t in (0.2, 0.5, 0.9):
+        assert _traces(split_bezier(bezier, t), bezier, t)
+
+
+def test_splitting_a_curve_of_a_polygon_replaces_both_and_undoes() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (5, 10)])
+    ab = drawing.add_curve(a, b, drawing.add_point((3, -4)), drawing.add_point((7, -4)))
+    bc, ca = drawing.add_line(b, c), drawing.add_line(c, a)
+    polygon = drawing.add_polygon([[bc, ca, ab]])  # walked so that ab runs forwards
+    original = drawing.bezier(ab)
+    points_before = set(drawing.points)
+    history = History()
+
+    split = split_line(drawing, ab, 0.3)
+    assert ab in drawing and split.point not in drawing  # nothing changes until it's pushed
+    history.push(split.command)
+
+    first, second = split.halves
+    assert ab not in drawing and polygon not in drawing
+    assert (first.start, first.end, second.start, second.end) == (a, split.point, split.point, b)
+    assert _traces((drawing.bezier(first), drawing.bezier(second)), original, 0.3)
+    assert ab.control1 not in drawing and ab.control2 not in drawing  # the curve's own controls go with it
+    assert set(split.polygons) == {polygon}
+    (replacement,) = drawing.polygons
+    assert replacement is split.polygons[polygon]
+    assert replacement.outer == (bc, ca, first, second)
+    assert drawing.degree(split.point) == 2
+    assert history.undo_text() == "Add Point"
+
+    history.undo()
+    assert ab in drawing and polygon in drawing and set(drawing.points) == points_before
+    assert list(drawing.polygons) == [polygon]
+    history.redo()
+    assert set(drawing.polygons) == {replacement}
+
+
+def test_split_halves_follow_a_ring_walked_backwards() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (5, 10)])
+    ab, bc, ca = drawing.add_line(a, b), drawing.add_line(b, c), drawing.add_line(c, a)
+    polygon = drawing.add_polygon([[ab, ca, bc]])  # a -> ... walked b <- a <- c: ab runs backwards
+    split = split_line(drawing, ab, 0.5)
+    History().push(split.command)
+    first, second = split.halves
+    assert split.polygons[polygon].outer == (second, first, ca, bc)
+    assert np.allclose(drawing.position(split.point), (5, 0))
+    assert not isinstance(first, BezierCurve) and not isinstance(second, BezierCurve)  # straight stays straight
+
+
+def test_splitting_a_loop_curve_makes_a_two_curve_ring() -> None:
+    drawing = VectorDrawing()
+    c = drawing.add_point((0, 0))
+    loop = drawing.add_curve(c, c, drawing.add_point((-10, 10)), drawing.add_point((10, 10)))
+    polygon = drawing.add_polygon([[loop]])
+    split = split_line(drawing, loop, 0.5)
+    History().push(split.command)
+    assert split.polygons[polygon].outer == split.halves
+    assert drawing.degree(c) == 2 and drawing.degree(split.point) == 2
+
+
+def test_a_line_splits_only_between_its_ends() -> None:
+    drawing = VectorDrawing()
+    line = drawing.add_line(drawing.add_point((0, 0)), drawing.add_point((10, 0)))
+    for t in (0.0, 1.0, -0.5):
+        with pytest.raises(ValueError):
+            split_line(drawing, line, t)

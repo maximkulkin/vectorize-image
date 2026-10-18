@@ -1,5 +1,5 @@
 """Transient scene items the tools own and show via Canvas.add_overlay: the Trace tool's preview
-curve and snap ring, the Edit tool's hover/drag highlights, the box,
+curve and snap ring, the Edit tool's hover/drag highlights and the point Add Point would add, the box,
 guides and brush of the area select tools, object mode's boxes around
 items, and a grab's axis guide. Built from stock Qt graphics items so their
 bounds (and repainting) take care of themselves; everything is drawn with
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from ..document import Element, Line, Point, Polygon, VectorDrawing
 from ..typedefs import Axis, Bezier, PointLike
-from .document_items import LINE_WIDTH_PX, bezier_path
+from .document_items import LINE_WIDTH_PX, POINT_RADIUS_PX, bezier_path
 
 PREVIEW_COLOR = QColor(255, 214, 0)
 ACTIVE_COLOR = QColor(255, 214, 0)  # where the Pen's chain goes on from; what a drag is moving
@@ -53,18 +53,31 @@ def _point(pos: PointLike) -> QPointF:
 
 
 class MarkerRing(QGraphicsEllipseItem):
-    """A ring of fixed on-screen radius, centered wherever it's shown."""
+    """A ring of fixed on-screen radius, centered wherever it's shown --
+    with `fill`, a dot."""
 
-    def __init__(self, radius_px: float, color: QColor, width: float) -> None:
+    def __init__(self, radius_px: float, color: QColor, width: float, fill: QColor | None = None) -> None:
         super().__init__(-radius_px, -radius_px, 2 * radius_px, 2 * radius_px)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
         self.setPen(cosmetic_pen(color, width))
-        self.setBrush(Qt.BrushStyle.NoBrush)
+        if fill is None:
+            self.setBrush(Qt.BrushStyle.NoBrush)
+        else:
+            self.setBrush(fill)
         self.hide()
 
     def show_at(self, pos: PointLike) -> None:
         self.setPos(_point(pos))
         self.show()
+
+
+class PointPreview(MarkerRing):
+    """Add Point's not-yet-added point: a dot the size of the drawing's
+    points, in the preview color, outlined to stand out from the line
+    it's on."""
+
+    def __init__(self) -> None:
+        super().__init__(POINT_RADIUS_PX + 1.0, QColor(0, 0, 0), 1.0, PREVIEW_COLOR)
 
 
 class CurvePreview(QGraphicsPathItem):

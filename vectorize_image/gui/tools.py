@@ -32,6 +32,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QGraphicsItem
 
 from .. import pen
+from ..curve_fit import bezier_point
 from ..document import (
     Batch,
     Command,
@@ -39,6 +40,7 @@ from ..document import (
     Element,
     Item,
     Layer,
+    Line,
     MoveItems,
     Point,
     Remove,
@@ -50,6 +52,7 @@ from ..document import (
 from ..document.hit_test import (
     box,
     circle,
+    closest_on_line,
     element_at,
     is_control,
     is_dangling,
@@ -58,11 +61,11 @@ from ..document.hit_test import (
     nearest_point,
     selectable_in,
 )
-from ..edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move
+from ..edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move, split_line
 from ..signals import Signal, disconnect
 from ..typedefs import Axis, Bezier, PointLike
 from .canvas import Canvas
-from .document_items import GRAB_COLOR
+from .document_items import GRAB_COLOR, POINT_RADIUS_PX
 from .overlays import (
     ACTIVE_COLOR,
     HOVER_COLOR,
@@ -76,12 +79,14 @@ from .overlays import (
     HitHighlight,
     ItemBoxes,
     MarkerRing,
+    PointPreview,
 )
 
 SNAP_RADIUS_PX = 12.0  # how close (on screen) the cursor must be to hit/snap to something
 PAINT_SELECT_DEFAULT_RADIUS_PX = 30.0
 START_MARKER_RADIUS_PX = 6.5
 ITEM_BOX_PAD_PX = 4.0  # how far object mode's boxes stand off the items they surround
+SPLIT_END_GAP_PX = 2 * POINT_RADIUS_PX  # how far (on screen) from a line's ends a point can be added to it
 
 OBJECT_HINT = (
     "Object mode: select whole drawings and images of the current layer "
@@ -106,8 +111,9 @@ EDIT_HINT = (
     "or press Delete to remove them. Control points (purple) show for what's selected: "
     "drag one to reshape its curve, leaving the selection as it is -- with "
     "Shift, its partner across the point swings opposite, keeping the curve "
-    "smooth there. Moving a point carries its own along. Esc cancels a drag "
-    "or a G move in progress. Tab goes back to object mode."
+    "smooth there. Moving a point carries its own along. Press A, then click "
+    "a line to add a point on it, splitting it in two. Esc cancels a drag, "
+    "a G move or an A in progress. Tab goes back to object mode."
 )
 
 
@@ -1092,6 +1098,121 @@ class PaintSelectTool(SelectTool):
         return "hold and drag the brush to select (shift to add)"
 
 
+# ------------------------------------------------------------ operations
+
+
+class Operation(Tool):
+    """A one-off gesture that a mode hands its canvas input to, instead
+    of its select tool, until the gesture says it's done -- with
+    `finished`, after committing or being cancelled (see
+    SelectingTool.start_operation)."""
+
+    finished: ClassVar[Signal] = Signal()
+
+
+class AddPointTool(Operation):
+    """Add Point (A): hover a line of the current drawing to preview a
+    point on it, under the cursor, and click to add it there, splitting
+    the line in two (see edit.split_line) as one undo step. That's it
+    done -- or Esc cancels; clicking off any line does nothing. The
+    selection keeps what it had: a split line's halves, and a reshaped
+    polygon's replacement, take its place."""
+
+    name: ClassVar[str] = "add_point"
+
+    def __init__(self, document: Document, canvas: Canvas) -> None:
+        super().__init__(document, canvas)
+        self._pos: tuple[float, float] | None = None  # the cursor's last position
+        self.target: tuple[Line, float] | None = None  # the line under the cursor, and where along it
+        self._line_highlight: HitHighlight = HitHighlight(HOVER_COLOR, 2.0)
+        self._point_marker: PointPreview = PointPreview()
+
+    @property
+    def marker(self) -> PointPreview:
+        """The preview of the point -- for inspection (e.g. by tests)."""
+        return self._point_marker
+
+    def _overlay_items(self) -> tuple[QGraphicsItem, ...]:
+        return (*self._line_highlight.items(), self._point_marker)
+
+    @override
+    def activate(self) -> None:
+        self._add_overlays(self._overlay_items())
+        self.document.history.changed.connect(self._refresh)
+        self.document.selection.changed.connect(self._refresh)  # e.g. another current drawing
+
+    @override
+    def deactivate(self) -> None:
+        disconnect(self.document.history.changed, self._refresh)
+        disconnect(self.document.selection.changed, self._refresh)
+        self._pos = None
+        self._show(None)
+        self._remove_overlays(self._overlay_items())
+
+    def _refresh(self) -> None:
+        # The drawing (an undo) or which drawing it is may have changed
+        # under the cursor: look again.
+        self._show(self._hit(self._pos) if self._pos is not None else None)
+
+    def _hit(self, pos: tuple[float, float]) -> tuple[Line, float] | None:
+        """The line under `pos`, and where along it a point would go --
+        unless that's right by one of its ends."""
+        drawing = self.document.selection.drawing
+        if self.document.selection.mode == "objects" or drawing is None:
+            return None
+        hit = closest_on_line(drawing, pos, self.canvas.scene_distance(SNAP_RADIUS_PX))
+        if hit is None:
+            return None
+        line, t = hit
+        bezier = drawing.bezier(line)
+        at = bezier_point(bezier, t)
+        gap = self.canvas.scene_distance(SPLIT_END_GAP_PX)
+        if not 0.0 < t < 1.0 or min(np.linalg.norm(at - bezier[0]), np.linalg.norm(at - bezier[3])) < gap:
+            return None
+        return hit
+
+    def _show(self, target: tuple[Line, float] | None) -> None:
+        self.target = target
+        drawing = self.document.selection.drawing
+        if target is None or drawing is None:
+            self._line_highlight.show(None, None)
+            self._point_marker.hide()
+            return
+        line, t = target
+        self._line_highlight.show(drawing, line)
+        self._point_marker.show_at(bezier_point(drawing.bezier(line), t))
+
+    @override
+    def on_move(self, scene_pos: QPointF) -> None:
+        self._pos = _xy(scene_pos)
+        self._show(self._hit(self._pos))
+
+    @override
+    def on_press(self, scene_pos: QPointF, shift: bool) -> None:
+        self._pos = _xy(scene_pos)
+        target = self._hit(self._pos)
+        drawing = self.document.selection.drawing
+        if target is None or drawing is None:
+            return
+        line, t = target
+        split = split_line(drawing, line, t)
+        selection = self.document.selection
+        kept = selection.items
+        self.document.history.push(split.command)
+        replaced: dict[Selectable, tuple[Selectable, ...]] = {line: split.halves}
+        replaced.update((old, (new,)) for old, new in split.polygons.items())
+        selection.set_items(new for item in kept for new in replaced.get(item, (item,)))
+        self.finished.emit()
+
+    @override
+    def on_escape(self) -> None:
+        self.finished.emit()
+
+    @override
+    def status_hint(self) -> str:
+        return "adding a point · click a line to add it there, Esc to cancel"
+
+
 # ----------------------------------------------------------------- modes
 
 
@@ -1115,19 +1236,56 @@ class SelectingTool[T: Selectable](Tool):
             t.name: t for t in (self.tweak_tool, self.box_tool, self.paint_tool, self.move_tool)
         }
         self.select_tool: SelectTool = self.tweak_tool
+        # A one-off gesture (see Operation) that has the input instead of
+        # the select tool, while it lasts.
+        self.operation: Operation | None = None
         self._active: bool = False
         for tool in self._select_tools.values():
             tool.status_changed.connect(self.status_changed.emit)  # e.g. a grab starting or ending
 
+    @property
+    def _input(self) -> Tool:
+        """Whoever gets the canvas input now."""
+        return self.operation if self.operation is not None else self.select_tool
+
     def set_select_tool(self, name: str) -> None:
+        """Use another select tool -- which cancels an operation in progress."""
         tool = self._select_tools[name]
         if tool is self.select_tool:
             return
+        self.end_operation()
         if self._active:
             self.select_tool.deactivate()
         self.select_tool = tool
         if self._active:
             tool.activate()
+        self.status_changed.emit()
+
+    def start_operation(self, operation: Operation, scene_pos: QPointF) -> None:
+        """Hand the input to `operation`, with the cursor at `scene_pos`,
+        until it's finished -- the select tool, dropping whatever it was
+        doing, gets it back then. Ignored while inactive, or while another
+        operation is going on."""
+        if not self._active or self.operation is not None:
+            return
+        self.select_tool.deactivate()
+        self.operation = operation
+        operation.finished.connect(self.end_operation)
+        operation.activate()
+        operation.on_move(scene_pos)
+        self.status_changed.emit()
+
+    def end_operation(self) -> None:
+        """Stop an operation in progress, if any, and give the input back
+        to the select tool."""
+        operation = self.operation
+        if operation is None:
+            return
+        self.operation = None
+        disconnect(operation.finished, self.end_operation)
+        operation.deactivate()
+        if self._active:
+            self.select_tool.activate()
         self.status_changed.emit()
 
     @override
@@ -1137,48 +1295,56 @@ class SelectingTool[T: Selectable](Tool):
 
     @override
     def deactivate(self) -> None:
+        self.end_operation()
         self._active = False
         self.select_tool.deactivate()
 
     @override
     def on_move(self, scene_pos: QPointF) -> None:
-        self.select_tool.on_move(scene_pos)
+        self._input.on_move(scene_pos)
 
     @override
     def on_press(self, scene_pos: QPointF, shift: bool) -> None:
-        self.select_tool.on_press(scene_pos, shift)
+        self._input.on_press(scene_pos, shift)
 
     @override
     def on_release(self, scene_pos: QPointF) -> None:
-        self.select_tool.on_release(scene_pos)
+        self._input.on_release(scene_pos)
 
     @override
     def on_escape(self) -> None:
-        self.select_tool.on_escape()
+        self._input.on_escape()
 
     @override
     def on_key(self, key: Qt.Key) -> bool:
-        return self.select_tool.on_key(key)
+        return self._input.on_key(key)
 
     @override
     def start_grab(self, scene_pos: QPointF) -> None:
+        self.end_operation()
         self.select_tool.start_grab(scene_pos)
 
     @override
     def status_hint(self) -> str:
-        return self.select_tool.status_hint()
+        return self._input.status_hint()
 
 
 class EditTool(SelectingTool[Element]):
     """Edit mode -- the selection in "points", "lines" or "polygons" mode:
     select those of the current drawing with one of the select sub-tools,
-    then move them (with Tweak or Move) or delete them."""
+    then move them (with Tweak or Move) or delete them. Or add a point to
+    a line (see AddPointTool)."""
 
     name: ClassVar[str] = "edit"
     hint: ClassVar[str] = EDIT_HINT
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas, ElementTarget)
+        self.add_point_tool: AddPointTool = AddPointTool(document, canvas)
+
+    def start_add_point(self, scene_pos: QPointF) -> None:
+        """Start adding a point, with the cursor at `scene_pos` (see AddPointTool)."""
+        self.start_operation(self.add_point_tool, scene_pos)
 
     @override
     def activate(self) -> None:

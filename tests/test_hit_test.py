@@ -4,6 +4,8 @@ from vectorize_image.document import Layer, Line, Point, Polygon, RasterImage, V
 from vectorize_image.document.hit_test import (
     box,
     circle,
+    closest_on_bezier,
+    closest_on_line,
     element_at,
     elements_in,
     is_control,
@@ -161,3 +163,22 @@ def test_items_in_finds_every_item_of_a_visible_layer_touched() -> None:
 
     layer.visible = False
     assert items_in(layer, box((5, 5), (12, 12))) == set()
+
+
+def test_closest_on_bezier_finds_the_parameter_under_the_point() -> None:
+    bezier = [np.array(p, dtype=float) for p in [(0, 0), (0, 10), (10, 10), (10, 0)]]
+    t, dist = closest_on_bezier(bezier, (5, 7.5 + 2))  # 2 above the curve's top, at t = 0.5
+    assert abs(t - 0.5) < 1e-3 and abs(dist - 2) < 1e-3
+
+    t, _ = closest_on_bezier(bezier, (-5, -5))  # past the start: clamped to it
+    assert t == 0.0
+
+
+def test_closest_on_line_picks_the_nearest_within_the_radius() -> None:
+    drawing = VectorDrawing()
+    _, lines, _ = _square(drawing)
+    hit = closest_on_line(drawing, (2.5, -1), radius=2)
+    assert hit is not None
+    line, t = hit
+    assert line is lines[0] and abs(t - 0.25) < 1e-3
+    assert closest_on_line(drawing, (5, 5), radius=2) is None

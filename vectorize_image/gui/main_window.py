@@ -18,7 +18,8 @@ it, every change to it goes through its undo history, and Save exports
 what's in it. Cut, Copy and Paste work on the selection, in either mode,
 through a clipboard of the app's own (see clipboard.py). In edit mode,
 Select Connected (Ctrl+L) grows a selection of points or lines to
-everything joined to it through lines.
+everything joined to it through lines, and A adds a point to a line,
+splitting it in two: hover the line to preview the point, click to add it.
 """
 
 from __future__ import annotations
@@ -113,6 +114,7 @@ class MainWindow(QMainWindow):
     paste_action: QAction
     delete_action: QAction
     select_connected_action: QAction
+    add_point_action: QAction
     trace_tool_action: QAction
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
@@ -249,6 +251,14 @@ class MainWindow(QMainWindow):
         )
         self.select_connected_action.setEnabled(False)
         self.select_connected_action.triggered.connect(self._select_connected)
+
+        self.add_point_action = QAction("&Add Point", self)
+        self.add_point_action.setShortcut(QKeySequence(Qt.Key.Key_A))
+        self.add_point_action.setToolTip(
+            "Add Point (A): in edit mode, click a line to add a point on it there, splitting it in two; Esc cancels"
+        )
+        self.add_point_action.setEnabled(False)
+        self.add_point_action.triggered.connect(self._add_point)
 
         # The mode -- object, or with Edit Mode on, edit -- is the
         # selection's: "objects", to select whole items, or "points",
@@ -389,6 +399,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.delete_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.select_connected_action)
+        edit_menu.addAction(self.add_point_action)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(zoom_in_action)
@@ -803,6 +814,7 @@ class MainWindow(QMainWindow):
         self.select_connected_action.setEnabled(
             self.tool is self.edit_tool and selection.mode in ("points", "lines") and bool(selection)
         )
+        self.add_point_action.setEnabled(self.tool is self.edit_tool)
 
     def _selecting(self) -> bool:
         return self.tool is self.object_tool or self.tool is self.edit_tool
@@ -827,6 +839,14 @@ class MainWindow(QMainWindow):
         if self.tool is not self.edit_tool or selection.drawing is None or selection.mode == "objects":
             return
         selection.set_items(elements_connected(selection.drawing, selection.mode, selection.elements))
+
+    def _add_point(self) -> None:
+        """Start adding a point to a line, from where the cursor is (see
+        AddPointTool)."""
+        if self.tool is not self.edit_tool:
+            return
+        self.canvas.setFocus()  # for Esc, which cancels it
+        self.edit_tool.start_add_point(self.canvas.cursor_scene_pos())
 
     def _update_save_enabled(self) -> None:
         self.save_action.setEnabled(
