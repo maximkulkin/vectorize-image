@@ -37,6 +37,13 @@ def is_control(drawing: VectorDrawing, point: Point) -> bool:
     return drawing.degree(point) == 0 and bool(drawing.lines_using(point))
 
 
+def ends(drawing: VectorDrawing) -> list[Point]:
+    """Every point that isn't only a control point: the ends of lines, and
+    lone points. What points mode selects -- control points are handles,
+    dragged but never selected."""
+    return [point for point in drawing.points if not is_control(drawing, point)]
+
+
 def is_dangling(drawing: VectorDrawing, point: Point) -> bool:
     """Whether `point` is the open end of a chain: exactly one line ends there."""
     return drawing.degree(point) == 1
@@ -89,10 +96,11 @@ def polygon_at(drawing: VectorDrawing, pos: PointLike, radius: float) -> Polygon
 
 
 def element_at(drawing: VectorDrawing, mode: ElementMode, pos: PointLike, radius: float) -> Element | None:
-    """What's under `pos`, at whatever granularity `mode` selects at."""
+    """What's under `pos`, at whatever granularity `mode` selects at (in
+    points mode, an end, never a control point)."""
     match mode:
         case "points":
-            return nearest_point(drawing, pos, radius)
+            return nearest_point(drawing, pos, radius, accept=lambda point: not is_control(drawing, point))
         case "lines":
             return nearest_line(drawing, pos, radius)
         case "polygons":
@@ -206,10 +214,11 @@ def circle(center: PointLike, radius: float) -> Region:
 def elements_in(drawing: VectorDrawing, mode: ElementMode, region: Region) -> set[Element]:
     """Every element of `mode`'s kind that `region` touches at all -- a line
     or polygon need only pass through it, not lie inside it, as marquee
-    selection works in most vector editors."""
+    selection works in most vector editors. Points are ends only, never
+    control points."""
     match mode:
         case "points":
-            return set(_points_in(drawing, drawing.points, region))
+            return set(_points_in(drawing, ends(drawing), region))
         case "lines":
             return set(_lines_in(drawing, drawing.lines, region))
         case "polygons":
@@ -238,8 +247,7 @@ def items_in(layer: Layer, region: Region) -> set[Item]:
             case RasterImage():
                 touched = region.touches_rect(*item_bounds(item))
             case VectorDrawing():
-                ends = [point for point in item.points if not is_control(item, point)]
-                touched = bool(_lines_in(item, item.lines, region) or _points_in(item, ends, region))
+                touched = bool(_lines_in(item, item.lines, region) or _points_in(item, ends(item), region))
         if touched:
             hits.add(item)
     return hits

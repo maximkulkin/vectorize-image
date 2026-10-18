@@ -1,5 +1,6 @@
-"""What the Edit tool's moves and deletes take along, for a selection in
-each mode. Qt-free; the tool turns these into commands.
+"""What the Edit tool's moves and deletes take along, and which control
+points it shows, for a selection in each mode. Qt-free; the tool turns
+these into commands, and the canvas into handles.
 """
 
 from __future__ import annotations
@@ -7,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import assert_never
 
-from .document import Element, Line, Point, Polygon, VectorDrawing
+from .document import BezierCurve, Element, Line, Point, Polygon, VectorDrawing
 from .document.hit_test import is_control
 from .typedefs import ElementMode
 
@@ -30,6 +31,32 @@ def points_to_move(drawing: VectorDrawing, items: Iterable[Element]) -> frozense
     for point in list(points):
         points.update(drawing.controls_at(point))
     return frozenset(points)
+
+
+def controls_shown(drawing: VectorDrawing, items: Iterable[Element]) -> frozenset[Point]:
+    """The control points edit mode shows, as handles to drag, for the
+    selected `items` -- only what's being worked on gets handles, not the
+    whole drawing:
+
+    - points: each selected end point's own (see VectorDrawing.controls_at).
+    - lines: both of each selected curve's.
+    - polygons: both of each curve's all around the selected polygons.
+    """
+    controls: set[Point] = set()
+    for item in items:
+        match item:
+            case Point():
+                controls.update(drawing.controls_at(item))
+            case Line():
+                controls.update(_controls_of(item))
+            case Polygon():
+                for line in item.lines:
+                    controls.update(_controls_of(line))
+    return frozenset(controls)
+
+
+def _controls_of(line: Line) -> tuple[Point, ...]:
+    return (line.control1, line.control2) if isinstance(line, BezierCurve) else ()
 
 
 def elements_to_delete(drawing: VectorDrawing, mode: ElementMode, items: Iterable[Element]) -> frozenset[Element]:

@@ -74,6 +74,18 @@ def test_element_at_per_mode() -> None:
     assert element_at(drawing, "polygons", (5, 5), 1) is polygon
 
 
+def test_points_mode_finds_ends_never_control_points() -> None:
+    """Control points are handles, dragged but never selected."""
+    drawing = VectorDrawing()
+    a, b, c1, c2 = (drawing.add_point(p) for p in [(0, 0), (10, 0), (3, 3), (7, 3)])
+    drawing.add_curve(a, b, c1, c2)
+    lone = drawing.add_point((50, 50))
+
+    assert element_at(drawing, "points", (3, 3), 1) is None
+    assert element_at(drawing, "points", (50, 50), 1) is lone
+    assert elements_in(drawing, "points", box((-1, -1), (60, 60))) == {a, b, lone}
+
+
 def test_regions_select_anything_they_touch() -> None:
     drawing = VectorDrawing()
     points, lines, polygon = _square(drawing)

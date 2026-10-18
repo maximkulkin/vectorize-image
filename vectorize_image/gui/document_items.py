@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from ..document import BezierCurve, Document, Item, Layer, Line, ObservableList, Point, Polygon, RasterImage, Selection, VectorDrawing
 from ..document.hit_test import is_control
+from ..edit import controls_shown
 from ..signals import disconnect
 from ..typedefs import Bezier, PointLike, Shape
 
@@ -68,8 +69,8 @@ class VectorView:
     keeps on the current layer's -- gets the editing decorations: its
     selection highlighted; with `outline_current`, its lines and points
     shown whatever the style says (so a drawing tool's work is visible
-    before it's filled); and with `show_controls`, its control points and
-    their handles.
+    before it's filled); and with `show_controls`, the control points of
+    what's selected and their handles (see edit.controls_shown).
     """
 
     style: VectorStyle = field(default_factory=VectorStyle)
@@ -435,21 +436,26 @@ class VectorDrawingItem(ModelItem):
         return path
 
     def _paint_controls(self, painter: QPainter, scale: float) -> None:
-        """Every curve's control points, with handle lines back to the end
-        each belongs to."""
+        """The control points of what's selected (see edit.controls_shown),
+        with handle lines back to the end each belongs to."""
+        selection = self._view.selection
+        shown: frozenset[Point] = controls_shown(self.drawing, selection.elements) if selection is not None else frozenset()
+        if not shown:
+            return
         curves = [line for line in self.drawing.lines if isinstance(line, BezierCurve)]
         painter.setPen(_cosmetic_pen(HANDLE_LINE_COLOR, 1.0, Qt.PenStyle.DashLine))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         for curve in curves:
             p0, p1, p2, p3 = (_qpoint(p) for p in self.bezier(curve))
-            painter.drawLine(p0, p1)
-            painter.drawLine(p3, p2)
+            if curve.control1 in shown:
+                painter.drawLine(p0, p1)
+            if curve.control2 in shown:
+                painter.drawLine(p3, p2)
         radius = CONTROL_RADIUS_PX / scale
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(CONTROL_COLOR)
-        for curve in curves:
-            for point in (curve.control1, curve.control2):
-                painter.drawEllipse(_qpoint(self._position(point)), radius, radius)
+        for point in shown:
+            painter.drawEllipse(_qpoint(self._position(point)), radius, radius)
 
     def _paint_selection(self, painter: QPainter, scale: float) -> None:
         selection = self._view.selection

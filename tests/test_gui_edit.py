@@ -100,6 +100,73 @@ def test_shift_click_toggles_and_empty_click_clears(window: MainWindow, diamond_
     assert not window.document.selection
 
 
+def _control_by(drawing: VectorDrawing, corner: tuple[float, float]) -> Point:
+    """The control point of `corner` on the top edge, a third of the way along."""
+    controls = drawing.controls_at(_point_at(drawing, corner))
+    return next(c for c in controls if np.isclose(drawing.position(c)[1], corner[1]))
+
+
+def test_control_points_are_dragged_not_selected(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    corner, control = _point_at(drawing, CORNERS[0]), _control_by(drawing, CORNERS[0])
+    x, y = drawing.position(control)
+    selection = window.document.selection
+
+    drag(window, (x, y), (x, y + 15))  # hidden while nothing's selected: nothing there to drag
+    assert not selection and np.allclose(drawing.position(control), (x, y))
+
+    click(window, *CORNERS[0])  # selecting the corner shows its controls...
+    click(window, x, y)  # ...and clicking one leaves the selection be
+    assert selection.items == {corner}
+
+    drag(window, (x, y), (x, y + 15))
+    assert np.allclose(drawing.position(control), (x, y + 15), atol=TOLERANCE)
+    assert np.allclose(drawing.position(corner), CORNERS[0])  # just the control point moved
+    assert selection.items == {corner}
+    assert window.undo_action.text() == "&Undo Move Control Point"
+
+
+def test_control_points_can_be_dragged_in_lines_mode(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    window.lines_mode_action.setChecked(True)
+    window.move_tool_action.trigger()
+    top = _line_between(drawing, CORNERS[0], CORNERS[1])
+    control = _control_by(drawing, CORNERS[0])
+    x, y = drawing.position(control)
+
+    click(window, 75, 40)  # select the top edge
+    drag(window, (x, y), (x, y - 15))  # its control point, on it, takes precedence over it
+
+    assert np.allclose(drawing.position(control), (x, y - 15), atol=TOLERANCE)
+    assert np.allclose(drawing.position(top.start), CORNERS[0]) and np.allclose(drawing.position(top.end), CORNERS[1])
+    assert window.document.selection.items == {top}
+
+
+def test_control_points_can_be_dragged_in_polygons_mode(window: MainWindow, diamond_path: str) -> None:
+    drawing, polygon = _edit_square(window, diamond_path)
+    window.polygons_mode_action.setChecked(True)
+    control = _control_by(drawing, CORNERS[0])
+    x, y = drawing.position(control)
+
+    click(window, 75, 75)  # select the square
+    drag(window, (x, y), (x, y + 15))
+
+    assert np.allclose(drawing.position(control), (x, y + 15), atol=TOLERANCE)
+    assert np.allclose(drawing.position(_point_at(drawing, CORNERS[0])), CORNERS[0])
+    assert window.document.selection.items == {polygon}
+
+
+def test_area_selection_never_takes_control_points(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    click(window, *CORNERS[0])  # its controls shown
+    x, y = drawing.position(_control_by(drawing, CORNERS[0]))
+    window.box_select_action.setChecked(True)
+
+    drag(window, (x - 3, y - 3), (x + 3, y + 3))
+
+    assert not window.document.selection
+
+
 def test_dragging_a_point_previews_then_moves_it_as_one_undo_step(window: MainWindow, diamond_path: str) -> None:
     drawing, _ = _edit_square(window, diamond_path)
     corner = _point_at(drawing, CORNERS[0])

@@ -47,13 +47,14 @@ from ..document.hit_test import (
     box,
     circle,
     element_at,
+    is_control,
     is_dangling,
     item_at,
     item_bounds,
     nearest_point,
     selectable_in,
 )
-from ..edit import elements_to_delete, points_to_move
+from ..edit import controls_shown, elements_to_delete, points_to_move
 from ..signals import Signal, disconnect
 from ..typedefs import Bezier
 from .canvas import Canvas
@@ -93,8 +94,10 @@ EDIT_HINT = (
     "Select points, lines or polygons of the current layer's drawing -- "
     "with Tweak (W), click or drag one to move it; or drag a box (B) or "
     "paint (C), then drag from anywhere with Move (G) -- or press Delete "
-    "to remove them. Moving a point carries its control points (purple) "
-    "along. Esc cancels a drag in progress. Tab goes back to object mode."
+    "to remove them. Control points (purple) show for what's selected: "
+    "drag one to reshape its curve, leaving the selection as it is. Moving "
+    "a point carries its own along. Esc cancels a drag in progress. Tab "
+    "goes back to object mode."
 )
 
 
@@ -376,9 +379,11 @@ def _tweak_click(selection: Selection, hit: Selectable | None, shift: bool) -> N
 class MoveTool(SelectTool):
     """In edit mode: drag anywhere to move the selected points, lines or
     polygons -- after selecting what's under the cursor, if it isn't
-    already (see _grab). The drag is previewed on the canvas and committed
-    as one move when the button is released. TweakTool selects on press
-    differently."""
+    already (see _grab). Or drag one of the control points shown for the
+    selection (see edit.controls_shown) to move just it, reshaping its
+    curve without selecting anything. The drag is previewed on the canvas
+    and committed as one move when the button is released. TweakTool
+    selects on press differently."""
 
     name: ClassVar[str] = "move"
 
@@ -387,6 +392,7 @@ class MoveTool(SelectTool):
         self._drag_origin: tuple[float, float] | None = None  # press position, for computing a drag's delta
         self._drag_points: frozenset[Point] = frozenset()  # what the drag moves
         self._drag_delta: tuple[float, float] = (0.0, 0.0)
+        self._dragging_handle: bool = False  # whether the drag is of a control point, not the selection
         self._drawing: VectorDrawing | None = None  # what hover/drag state refers to
         self._pressed: tuple[Element | None, bool] = (None, False)  # (what, with shift) the last press was on
         self.hover_target: Element | None = None
@@ -434,10 +440,19 @@ class MoveTool(SelectTool):
             self._drawing = self.selection.drawing
 
     def _hit(self, pos: tuple[float, float]) -> Element | None:
+        """What's under the cursor: a control point shown for the
+        selection -- a handle, which takes precedence over the line it's
+        on, or the polygon it's in -- or else the mode's kind of element.
+        In points mode, whichever point is nearer, an end or a handle."""
         mode, drawing = self.selection.mode, self._drawing
         if mode == "objects" or drawing is None:
             return None
-        return element_at(drawing, mode, pos, self.canvas.scene_distance(SNAP_RADIUS_PX))
+        radius = self.canvas.scene_distance(SNAP_RADIUS_PX)
+        handles = controls_shown(drawing, self.selection.elements)
+        if mode == "points":
+            return nearest_point(drawing, pos, radius, lambda point: point in handles or not is_control(drawing, point))
+        handle = nearest_point(drawing, pos, radius, lambda point: point in handles)
+        return handle if handle is not None else element_at(drawing, mode, pos, radius)
 
     def _set_hover(self, target: Element | None) -> None:
         self.hover_target = target
@@ -453,6 +468,7 @@ class MoveTool(SelectTool):
         self._drag_origin = None
         self._drag_points = frozenset()
         self._drag_delta = (0.0, 0.0)
+        self._dragging_handle = False
         self._set_active(None)
 
     def _select_on_press(self, hit: Element | None, shift: bool) -> bool:
@@ -483,22 +499,32 @@ class MoveTool(SelectTool):
         if drawing is None:
             return
         hit = self._hit(pos)
+        if isinstance(hit, Point) and is_control(drawing, hit):
+            # A handle: dragged on its own, whatever's selected, which stays so.
+            self._pressed = (None, shift)
+            self._start_drag(pos, frozenset({hit}), hit)
+            self._dragging_handle = True
+            return
         self._pressed = (hit, shift)
         if not self._select_on_press(hit, shift):
             self._end_drag()
             return
+        self._start_drag(pos, points_to_move(drawing, self.selection.elements), hit)
+
+    def _start_drag(self, pos: tuple[float, float], points: frozenset[Point], target: Element | None) -> None:
         self._drag_origin = pos
-        self._drag_points = points_to_move(drawing, self.selection.elements)
+        self._drag_points = points
         self._drag_delta = (0.0, 0.0)
         self._set_hover(None)
-        self._set_active(hit)
+        self._set_active(target)
 
     @override
     def on_release(self, scene_pos: QPointF) -> None:
         drawing, points, delta, dragged = self._drawing, self._drag_points, self._drag_delta, self.dragging
+        text = "Move Control Point" if self._dragging_handle else f"Move {self.selection.mode.title()}"
         self._end_drag()
         if drawing is not None and points and delta != (0.0, 0.0):
-            self.document.history.push(Translate(drawing, points, delta, f"Move {self.selection.mode.title()}"))
+            self.document.history.push(Translate(drawing, points, delta, text))
         elif dragged:
             self._on_click(*self._pressed)
 

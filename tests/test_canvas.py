@@ -384,6 +384,30 @@ def test_lines_hidden_by_style_show_on_the_current_drawing_while_editing(canvas:
     assert _render(canvas, 50, 50).pixelColor(25, 25) != QColor(255, 255, 255)
 
 
+def test_only_the_selections_control_points_are_shown(canvas: Canvas) -> None:
+    drawing = VectorDrawing()
+    a, b, c1, c2 = (drawing.add_point(p) for p in [(10, 40), (40, 40), (10, 10), (40, 10)])
+    curve = drawing.add_curve(a, b, c1, c2)  # bulges up to y=17.5, clear of its control points
+    canvas.document.layers.append(Layer("a", [drawing]))
+    canvas.set_vector_style(VectorStyle(show_lines=False, show_points=False))
+    canvas.set_editing(outline=False, controls=True)
+    selection = canvas.document.selection
+    white = QColor(255, 255, 255)
+
+    def shown() -> tuple[bool, bool]:
+        image = _render(canvas, 50, 50)
+        return (image.pixelColor(10, 10) != white, image.pixelColor(40, 10) != white)
+
+    selection.set_mode("points")
+    assert shown() == (False, False)  # nothing selected, no handles
+    selection.set_items({b})
+    assert shown() == (False, True)  # an end point: only its own
+
+    selection.set_mode("lines")
+    selection.set_items({curve})
+    assert shown() == (True, True)
+
+
 def test_the_selection_is_highlighted(canvas: Canvas) -> None:
     drawing = _square_drawing()
     canvas.document.layers.append(Layer("a", [drawing]))

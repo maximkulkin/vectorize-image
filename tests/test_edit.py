@@ -1,5 +1,5 @@
-from vectorize_image.document import Line, Point, VectorDrawing
-from vectorize_image.edit import elements_to_delete, points_to_move
+from vectorize_image.document import BezierCurve, Line, Point, VectorDrawing
+from vectorize_image.edit import controls_shown, elements_to_delete, points_to_move
 
 
 def _curve(drawing: VectorDrawing, start: Point, end: Point) -> Line:
@@ -27,6 +27,31 @@ def test_moving_a_line_carries_the_neighbours_controls_at_its_ends() -> None:
     assert set(bc.points) <= moved
     assert set(drawing.controls_at(b)) <= moved  # ab's control next to b too
     assert a not in moved
+
+
+def test_controls_shown_for_a_point_are_its_own() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (20, 0)])
+    ab = _curve(drawing, a, b)
+    bc = _curve(drawing, b, c)
+    assert isinstance(ab, BezierCurve) and isinstance(bc, BezierCurve)
+
+    assert controls_shown(drawing, []) == set()
+    assert controls_shown(drawing, [b]) == {ab.control2, bc.control1}
+    assert controls_shown(drawing, [a]) == {ab.control1}
+
+
+def test_controls_shown_for_lines_and_polygons_are_their_curves() -> None:
+    drawing = VectorDrawing()
+    a, b, c, d = (drawing.add_point(p) for p in [(0, 0), (10, 0), (10, 10), (0, 10)])
+    curves = [_curve(drawing, start, end) for start, end in [(a, b), (b, c), (c, d)]]
+    straight = drawing.add_line(d, a)
+    polygon = drawing.add_polygon([[*curves, straight]])
+    controls = {control for curve in curves if isinstance(curve, BezierCurve) for control in curve.points[1:3]}
+
+    assert controls_shown(drawing, [curves[0]]) == set(curves[0].points[1:3])
+    assert controls_shown(drawing, [straight]) == set()
+    assert controls_shown(drawing, [polygon]) == controls
 
 
 def test_deleting_points_skips_lone_control_points() -> None:
