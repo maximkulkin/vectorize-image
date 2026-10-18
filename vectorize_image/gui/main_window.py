@@ -624,18 +624,26 @@ class MainWindow(QMainWindow):
 
     def _save_svg(self) -> None:
         shapes = self._export_shapes()
-        if not shapes or self.image is None:
+        if not shapes:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Save Vector as SVG", "", "SVG files (*.svg)")
         if not path:
             return
-        width, height = self.image.size
+        width, height = self._page_size(shapes)
         svg = svgwrite.build_svg(shapes, width, height, fill=self._overlay_color.name(), precision=2)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(svg)
         except OSError as exc:
             QMessageBox.warning(self, "Could not save SVG", str(exc))
+
+    def _page_size(self, shapes: list[Shape]) -> tuple[float, float]:
+        """The saved SVG's width and height: the opened image's -- or, with
+        no image to vectorize, from the origin to just past every shape."""
+        if self.image is not None:
+            return self.image.size
+        extent = np.max([point for shape in shapes for contour in shape for bezier in contour for point in bezier], axis=0)
+        return float(np.ceil(max(extent[0], 0.0))), float(np.ceil(max(extent[1], 0.0)))
 
     def _reset_defaults(self) -> None:
         self.auto_threshold_checkbox.setChecked(DEFAULTS["auto_threshold"])
@@ -869,9 +877,7 @@ class MainWindow(QMainWindow):
             self.edit_tool.dissolve_selection()
 
     def _update_save_enabled(self) -> None:
-        self.save_action.setEnabled(
-            self.image is not None and any(drawing.polygons for drawing in self._exported_drawings())
-        )
+        self.save_action.setEnabled(any(drawing.polygons for drawing in self._exported_drawings()))
 
     def _update_status(self) -> None:
         if self.image is None and not self.document.layers:

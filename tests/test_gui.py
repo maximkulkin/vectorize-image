@@ -167,6 +167,25 @@ def test_save_svg_writes_the_document(window: MainWindow, donut_path: str, tmp_p
     assert expected.count("<path") == 1
 
 
+def test_save_svg_without_an_image(window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    svg_path = tmp_path / "shapes.svg"
+    svg_path.write_text(
+        (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+            '<path d="M10,10 H40 V40 H10 Z"/><path d="M50,50 H70.5 V80 H50 Z"/></svg>'
+        )
+    )
+    window.import_svg(str(svg_path))
+    assert window.image is None and window.save_action.isEnabled()
+    out_path = tmp_path / "out.svg"
+
+    _save_to(window, out_path, monkeypatch)
+
+    shapes = [shape for drawing in window._exported_drawings() for shape in drawing.shapes()]
+    expected = svgwrite.build_svg(shapes, 71, 80, fill=window._overlay_color.name(), precision=2)
+    assert out_path.read_text(encoding="utf-8") == expected  # sized to fit the shapes
+
+
 def test_save_svg_leaves_out_hidden_layers(window: MainWindow, donut_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window.load_image(donut_path)
     _add_square(window)
