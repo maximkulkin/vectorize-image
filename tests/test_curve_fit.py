@@ -73,3 +73,21 @@ def test_fit_curve_handles_duplicate_consecutive_points() -> None:
     points = np.array([[0.0, 0.0], [0.0, 0.0], [5.0, 0.0], [10.0, 0.0]])
     beziers = curve_fit.fit_curve(points, max_error=0.5)
     assert len(beziers) >= 1
+
+
+def test_fit_cubic_with_tangents_recovers_a_sampled_cubic() -> None:
+    bezier = [np.array(p, dtype=float) for p in [(0, 0), (2, 8), (9, 9), (12, 1)]]
+    points = _sample_bezier(bezier)
+    fitted = curve_fit.fit_cubic_with_tangents(points, bezier[1] - bezier[0], bezier[2] - bezier[3])
+
+    assert np.allclose(fitted[0], bezier[0]) and np.allclose(fitted[3], bezier[3])
+    assert np.max(np.linalg.norm(_sample_bezier(fitted) - points, axis=1)) < 0.05
+
+
+def test_fit_cubic_with_tangents_keeps_the_given_tangents() -> None:
+    points = np.array([[0.0, 0.0], [3.0, 4.0], [6.0, 5.0], [10.0, 0.0]])
+    left, right = np.array([0.0, 1.0]), np.array([0.0, 1.0])
+    p0, p1, p2, p3 = curve_fit.fit_cubic_with_tangents(points, left, right)
+    for handle, end, tangent in ((p1, p0, left), (p2, p3, right)):
+        direction = (handle - end) / np.linalg.norm(handle - end)
+        assert np.allclose(direction, tangent)

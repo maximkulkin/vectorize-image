@@ -2,19 +2,22 @@
 points it shows, for a selection in each mode -- and how a shift-drag of
 one swings its partner around. Qt-free; the tool turns these into
 commands, and the canvas into handles. Also how adding a point splits a
-line in two (`split_line`), which comes with its command ready-made.
+line in two (`split_line`), and how dissolving one merges the two lines
+through it back into one (`dissolve_point`) -- each comes with its
+command ready-made.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import assert_never
 
 import numpy as np
 
+from .curve_fit import fit_cubic_with_tangents
 from .document import Batch, BezierCurve, Command, Element, Fragment, Insert, Line, Point, Polygon, Remove, VectorDrawing
-from .document.hit_test import is_control
+from .document.hit_test import is_control, sample
 from .typedefs import Bezier, ElementMode, PointLike
 
 
@@ -268,5 +271,99 @@ def _ring_with(ring: list[tuple[Line, bool]], line: Line, halves: tuple[Line, Li
         if each is line:
             lines.extend(halves[::-1] if reverse else halves)
         else:
+            lines.append(each)
+    return lines
+
+
+def dissolvable(drawing: VectorDrawing, point: Point) -> bool:
+    """Whether `point` can be dissolved (see dissolve_point): it's where
+    exactly two lines meet, neither of them a loop -- and they aren't two
+    straight lines between the same two points, which would merge into a
+    straight line going nowhere."""
+    if point not in drawing:
+        return False
+    lines = drawing.lines_at(point)
+    if len(lines) != 2 or any(line.is_loop for line in lines):
+        return False
+    first, second = lines
+    straight = not isinstance(first, BezierCurve) and not isinstance(second, BezierCurve)
+    return not (straight and first.other(point) is second.other(point))
+
+
+@dataclass(frozen=True)
+class Dissolve:
+    """Dissolving a point, merging the two lines through it into one:
+    what `command` puts in place of the lines, and of the polygons they
+    bound (each replaced by another with the one line in their place)."""
+
+    line: Line  # from the first line's far end to the second's
+    polygons: Mapping[Polygon, Polygon]  # each polygon the lines bounded, and the one taking its place
+    command: Command
+
+
+def dissolve_point(drawing: VectorDrawing, point: Point) -> Dissolve:
+    """Remove `point`, merging the two lines that meet there into one
+    between their other ends -- the reverse of split_line. Two straight
+    lines make a straight one; otherwise it's a curve fitted as closely as
+    one cubic can be to the two it replaces, leaving and arriving along
+    the same tangents they did, so it meets its neighbors as smoothly as
+    they did. The two lines' control points go with them, unless another
+    line uses them. Nothing changes until the command is pushed. Raises
+    ValueError unless the point is `dissolvable`.
+    """
+    if not dissolvable(drawing, point):
+        raise ValueError(f"{point!r} isn't where exactly two lines meet")
+    first, second = drawing.lines_at(point)
+    # Both oriented to run through the point: from the first's far end, to the second's.
+    into = drawing.bezier(first)
+    if first.start is point:
+        into = into[::-1]
+    out_of = drawing.bezier(second)
+    if second.end is point:
+        out_of = out_of[::-1]
+    start, end = first.other(point), second.other(point)
+
+    points: dict[Point, np.ndarray] = {}
+    line: Line
+    if isinstance(first, BezierCurve) or isinstance(second, BezierCurve):
+        samples = np.concatenate([sample(into), sample(out_of)[1:]])
+        merged = fit_cubic_with_tangents(samples, _tangent(into), _tangent(out_of[::-1]))
+        control1, control2 = Point(), Point()
+        points = {control1: merged[1], control2: merged[2]}
+        line = BezierCurve(start, end, control1, control2)
+    else:
+        line = Line(start, end)
+
+    polygons = {
+        polygon: Polygon([_ring_merging(ring, first, second, line) for ring in polygon.rings])
+        for polygon in dict.fromkeys([*drawing.polygons_on(first), *drawing.polygons_on(second)])
+    }
+    fragment = Fragment(points, [line], list(polygons.values()))
+    command = Batch([Remove(drawing, [point]), Insert(drawing, fragment)], "Dissolve Point")
+    return Dissolve(line, polygons, command)
+
+
+def _tangent(bezier: Bezier) -> np.ndarray:
+    """The direction `bezier` leaves its start in: towards its first
+    control point, or if that's right on the start, the next point that
+    isn't."""
+    start = np.asarray(bezier[0], dtype=float)
+    for point in bezier[1:]:
+        direction = np.asarray(point, dtype=float) - start
+        if np.linalg.norm(direction) > 1e-9:
+            return direction
+    return np.zeros(2)
+
+
+def _ring_merging(ring: Sequence[Line], first: Line, second: Line, line: Line) -> list[Line]:
+    """A polygon ring's lines with `line` in place of `first` and
+    `second` -- which, meeting at a point no other line does, are next to
+    each other around it (or its two ends), so taking one's place and
+    dropping the other keeps it in order."""
+    lines: list[Line] = []
+    for each in ring:
+        if each is first:
+            lines.append(line)
+        elif each is not second:
             lines.append(each)
     return lines

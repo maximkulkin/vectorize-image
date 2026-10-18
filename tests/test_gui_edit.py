@@ -577,6 +577,62 @@ def test_add_point_is_only_for_edit_mode(window: MainWindow, diamond_path: str) 
     assert not window.add_point_action.isEnabled()
 
 
+def test_dissolving_points_merges_the_lines_through_them(window: MainWindow, diamond_path: str) -> None:
+    drawing, polygon = _edit_square(window, diamond_path)
+    assert not window.dissolve_points_action.isEnabled()  # nothing selected
+    click(window, *CORNERS[1])
+    corner = _point_at(drawing, CORNERS[1])
+    assert window.dissolve_points_action.isEnabled()
+
+    _key(window, Qt.Key.Key_Backspace, Qt.KeyboardModifier.ControlModifier)
+    assert corner not in drawing and polygon not in drawing
+    assert len(drawing.lines) == 3 and len(drawing.points) == 3 * 3
+    (replacement,) = drawing.polygons
+    assert _line_between(drawing, CORNERS[0], CORNERS[2]) in replacement.outer
+    assert not window.document.selection and not window.dissolve_points_action.isEnabled()
+    assert window.document.history.undo_text() == "Dissolve Point"
+
+    window.undo_action.trigger()
+    assert corner in drawing and polygon in drawing and len(drawing.lines) == 4
+
+
+def test_dissolving_several_points_is_one_undo_step(window: MainWindow, diamond_path: str) -> None:
+    drawing, polygon = _edit_square(window, diamond_path)
+    click(window, *CORNERS[1])
+    click(window, *CORNERS[3], shift=True)
+    window.dissolve_points_action.trigger()
+    assert len(drawing.lines) == 2 and len(drawing.polygons) == 1
+    assert window.document.history.undo_text() == "Dissolve Points"
+
+    window.undo_action.trigger()
+    assert polygon in drawing and len(drawing.lines) == 4 and len(drawing.points) == 4 * 3
+    assert not window.document.history.can_undo()
+
+
+def test_dissolve_leaves_points_that_arent_between_two_lines(window: MainWindow, diamond_path: str) -> None:
+    drawing, _ = _edit_square(window, diamond_path)
+    ends = (drawing.add_point((150, 150)), drawing.add_point((170, 150)))
+    drawing.add_line(*ends)
+    click(window, 150, 150)
+    assert not window.dissolve_points_action.isEnabled()  # an open end
+
+    corner = _point_at(drawing, CORNERS[0])
+    click(window, *CORNERS[0], shift=True)
+    assert window.dissolve_points_action.isEnabled()
+    window.dissolve_points_action.trigger()
+    assert corner not in drawing and len(drawing.lines) == 3 + 1  # what's left of the square, and the line apart
+    assert ends[0] in drawing and window.document.selection.items == {ends[0]}
+
+
+def test_dissolve_is_only_for_points_in_edit_mode(window: MainWindow, diamond_path: str) -> None:
+    _edit_square(window, diamond_path)
+    _key(window, Qt.Key.Key_2)
+    click(window, 75, 40)
+    assert window.document.selection and not window.dissolve_points_action.isEnabled()
+    window.edit_tool_action.setChecked(False)
+    assert not window.dissolve_points_action.isEnabled()
+
+
 def test_switching_selection_mode_clears_the_selection(window: MainWindow, diamond_path: str) -> None:
     _edit_square(window, diamond_path)
     click(window, *CORNERS[0])

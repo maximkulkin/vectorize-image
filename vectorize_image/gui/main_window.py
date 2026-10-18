@@ -20,6 +20,8 @@ through a clipboard of the app's own (see clipboard.py). In edit mode,
 Select Connected (Ctrl+L) grows a selection of points or lines to
 everything joined to it through lines, and A adds a point to a line,
 splitting it in two: hover the line to preview the point, click to add it.
+Dissolve Points (Ctrl+Backspace) is its reverse, for selected points:
+each one where two lines meet goes, the two merging into one.
 """
 
 from __future__ import annotations
@@ -115,6 +117,7 @@ class MainWindow(QMainWindow):
     delete_action: QAction
     select_connected_action: QAction
     add_point_action: QAction
+    dissolve_points_action: QAction
     trace_tool_action: QAction
     edit_tool_action: QAction
     _tool_action_group: QActionGroup
@@ -260,6 +263,17 @@ class MainWindow(QMainWindow):
         self.add_point_action.setEnabled(False)
         self.add_point_action.triggered.connect(self._add_point)
 
+        self.dissolve_points_action = QAction("Dissol&ve Points", self)
+        self.dissolve_points_action.setShortcuts([QKeySequence("Ctrl+Backspace"), QKeySequence("Ctrl+Del")])
+        self.dissolve_points_action.setToolTip(
+            (
+                "Dissolve Points (Ctrl+Backspace): in edit mode, remove the selected points where two lines meet, "
+                "merging the two into one line that follows them as closely as it can"
+            )
+        )
+        self.dissolve_points_action.setEnabled(False)
+        self.dissolve_points_action.triggered.connect(self._dissolve_points)
+
         # The mode -- object, or with Edit Mode on, edit -- is the
         # selection's: "objects", to select whole items, or "points",
         # "lines" or "polygons" of the current drawing, as the checked one
@@ -400,6 +414,7 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self.select_connected_action)
         edit_menu.addAction(self.add_point_action)
+        edit_menu.addAction(self.dissolve_points_action)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(zoom_in_action)
@@ -815,6 +830,7 @@ class MainWindow(QMainWindow):
             self.tool is self.edit_tool and selection.mode in ("points", "lines") and bool(selection)
         )
         self.add_point_action.setEnabled(self.tool is self.edit_tool)
+        self.dissolve_points_action.setEnabled(self.tool is self.edit_tool and self.edit_tool.can_dissolve())
 
     def _selecting(self) -> bool:
         return self.tool is self.object_tool or self.tool is self.edit_tool
@@ -847,6 +863,10 @@ class MainWindow(QMainWindow):
             return
         self.canvas.setFocus()  # for Esc, which cancels it
         self.edit_tool.start_add_point(self.canvas.cursor_scene_pos())
+
+    def _dissolve_points(self) -> None:
+        if self.tool is self.edit_tool:
+            self.edit_tool.dissolve_selection()
 
     def _update_save_enabled(self) -> None:
         self.save_action.setEnabled(

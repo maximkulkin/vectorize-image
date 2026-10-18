@@ -266,3 +266,39 @@ def fit_single_cubic(points: np.ndarray) -> list[np.ndarray] | None:
     right_tangent = _normalize(pts[-2] - pts[-1])
     parameters = _chord_length_parameterize(pts)
     return _generate_bezier(pts, parameters, left_tangent, right_tangent)
+
+
+def fit_cubic_with_tangents(points: np.ndarray, left_tangent: np.ndarray, right_tangent: np.ndarray) -> list[np.ndarray]:
+    """Fit exactly one cubic bezier through a polyline, from its first
+    point to its last, leaving the first along `left_tangent` and arriving
+    at the last from along `right_tangent` (a direction pointing back, away
+    from the end, as `fit_curve`'s are). For replacing curves with one that
+    still meets its neighbors the way they did. Like fit_single_cubic it
+    never splits, but it does reparameterize, keeping whichever fit came
+    closest to the points. Falls back to handles a third of the way along
+    the chord with fewer than three distinct points.
+    """
+    pts = [np.asarray(p, dtype=np.float64) for p in points]
+    left_tangent = _normalize(np.asarray(left_tangent, dtype=np.float64))
+    right_tangent = _normalize(np.asarray(right_tangent, dtype=np.float64))
+
+    deduped = [pts[0]]
+    for p in pts[1:]:
+        if np.linalg.norm(p - deduped[-1]) > 1e-9:
+            deduped.append(p)
+    pts = deduped
+
+    if len(pts) < 3:
+        dist = float(np.linalg.norm(pts[0] - pts[-1])) / 3.0
+        return [pts[0], pts[0] + left_tangent * dist, pts[-1] + right_tangent * dist, pts[-1]]
+
+    parameters = _chord_length_parameterize(pts)
+    bezier = _generate_bezier(pts, parameters, left_tangent, right_tangent)
+    best, best_error = bezier, _compute_max_error(pts, bezier, parameters)[0]
+    for _ in range(MAX_REPARAMETERIZE_ITERATIONS):
+        parameters = _reparameterize(bezier, pts, parameters)
+        bezier = _generate_bezier(pts, parameters, left_tangent, right_tangent)
+        error, _ = _compute_max_error(pts, bezier, parameters)
+        if error < best_error:
+            best, best_error = bezier, error
+    return best

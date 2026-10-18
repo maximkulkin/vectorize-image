@@ -61,7 +61,15 @@ from ..document.hit_test import (
     nearest_point,
     selectable_in,
 )
-from ..edit import controls_shown, elements_to_delete, mirrored_partner, points_to_move, split_line
+from ..edit import (
+    controls_shown,
+    dissolvable,
+    dissolve_point,
+    elements_to_delete,
+    mirrored_partner,
+    points_to_move,
+    split_line,
+)
 from ..signals import Signal, disconnect
 from ..typedefs import Axis, Bezier, PointLike
 from .canvas import Canvas
@@ -112,8 +120,10 @@ EDIT_HINT = (
     "drag one to reshape its curve, leaving the selection as it is -- with "
     "Shift, its partner across the point swings opposite, keeping the curve "
     "smooth there. Moving a point carries its own along. Press A, then click "
-    "a line to add a point on it, splitting it in two. Esc cancels a drag, "
-    "a G move or an A in progress. Tab goes back to object mode."
+    "a line to add a point on it, splitting it in two; or Ctrl+Backspace to "
+    "dissolve the selected points, merging the two lines through each into "
+    "one. Esc cancels a drag, a G move or an A in progress. Tab goes back "
+    "to object mode."
 )
 
 
@@ -1333,7 +1343,7 @@ class EditTool(SelectingTool[Element]):
     """Edit mode -- the selection in "points", "lines" or "polygons" mode:
     select those of the current drawing with one of the select sub-tools,
     then move them (with Tweak or Move) or delete them. Or add a point to
-    a line (see AddPointTool)."""
+    a line (see AddPointTool), or dissolve selected points."""
 
     name: ClassVar[str] = "edit"
     hint: ClassVar[str] = EDIT_HINT
@@ -1372,6 +1382,35 @@ class EditTool(SelectingTool[Element]):
         doomed = elements_to_delete(drawing, mode, selection.elements)
         if doomed:
             self.document.history.push(Remove(drawing, doomed, f"Delete {mode.title()}"))
+
+    def can_dissolve(self) -> bool:
+        """Whether any of the selected points can be dissolved -- in
+        "points" mode only (see edit.dissolvable)."""
+        selection = self.document.selection
+        drawing = selection.drawing
+        return (
+            selection.mode == "points"
+            and drawing is not None
+            and any(isinstance(item, Point) and dissolvable(drawing, item) for item in selection.elements)
+        )
+
+    def dissolve_selection(self) -> None:
+        """Dissolve the selected points one by one, each merging the two
+        lines through it into one (see edit.dissolve_point) -- a line an
+        earlier one made may be merged again by a later one -- as one undo
+        step. Points that aren't where exactly two lines meet stay, and
+        stay selected; the dissolved ones drop out of the selection with
+        their removal."""
+        selection = self.document.selection
+        drawing = selection.drawing
+        if selection.mode != "points" or drawing is None:
+            return
+        history = self.document.history
+        points = [item for item in selection.elements if isinstance(item, Point)]
+        with history.macro("Dissolve Points"):
+            for point in points:
+                if dissolvable(drawing, point):
+                    history.push(dissolve_point(drawing, point).command)
 
 
 class ObjectTool(SelectingTool[Item]):

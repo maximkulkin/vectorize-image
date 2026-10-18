@@ -3,8 +3,11 @@ import pytest
 
 from vectorize_image.curve_fit import bezier_point
 from vectorize_image.document import BezierCurve, History, Line, Point, VectorDrawing
+from vectorize_image.document.hit_test import sample
 from vectorize_image.edit import (
     controls_shown,
+    dissolvable,
+    dissolve_point,
     elements_connected,
     elements_to_delete,
     mirrored_partner,
@@ -234,3 +237,103 @@ def test_a_line_splits_only_between_its_ends() -> None:
     for t in (0.0, 1.0, -0.5):
         with pytest.raises(ValueError):
             split_line(drawing, line, t)
+
+
+def _distance(samples: np.ndarray, bezier: Bezier) -> float:
+    """How far the farthest of `samples` is from `bezier` (near enough)."""
+    curve = np.array([bezier_point(bezier, float(t)) for t in np.linspace(0, 1, 401)])
+    return float(np.linalg.norm(samples[:, None] - curve[None], axis=2).min(axis=1).max())
+
+
+def test_dissolving_a_split_point_brings_back_the_curve_and_undoes() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (5, 10)])
+    ab = drawing.add_curve(a, b, drawing.add_point((2, -6)), drawing.add_point((9, -3)))
+    bc, ca = drawing.add_line(b, c), drawing.add_line(c, a)
+    drawing.add_polygon([[ab, bc, ca]])
+    original = drawing.bezier(ab)
+    history = History()
+    split = split_line(drawing, ab, 0.4)
+    history.push(split.command)
+    (split_polygon,) = drawing.polygons
+    points_before, lines_before = set(drawing.points), set(drawing.lines)
+
+    assert dissolvable(drawing, split.point)
+    dissolve = dissolve_point(drawing, split.point)
+    assert split.point in drawing and dissolve.line not in drawing  # nothing changes until it's pushed
+    history.push(dissolve.command)
+
+    line = dissolve.line
+    assert isinstance(line, BezierCurve) and {line.start, line.end} == {a, b}
+    assert split.point not in drawing and not any(half in drawing for half in split.halves)
+    assert not any(control in drawing for half in split.halves for control in half.points[1:3])
+    assert _distance(sample(original), drawing.bezier(line)) < 0.05
+    assert set(dissolve.polygons) == {split_polygon}
+    (replacement,) = drawing.polygons
+    assert replacement is dissolve.polygons[split_polygon]
+    assert set(replacement.outer) == {line, bc, ca}
+    assert history.undo_text() == "Dissolve Point"
+
+    history.undo()
+    assert set(drawing.points) == points_before and set(drawing.lines) == lines_before
+    assert list(drawing.polygons) == [split_polygon]
+    history.redo()
+    assert set(drawing.polygons) == {replacement}
+
+
+def test_dissolving_keeps_the_tangents_at_the_far_ends() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 10), (20, 0)])
+    drawing.add_curve(a, b, drawing.add_point((0, 5)), drawing.add_point((5, 10)))
+    drawing.add_curve(c, b, drawing.add_point((20, 5)), drawing.add_point((15, 10)))  # runs into b too
+    dissolve = dissolve_point(drawing, b)
+    History().push(dissolve.command)
+
+    p0, p1, p2, p3 = drawing.bezier(dissolve.line)
+    assert np.allclose(p0, (0, 0)) and np.allclose(p3, (20, 0))
+    assert np.isclose(p1[0], 0) and p1[1] > 0  # leaves a straight up, as before
+    assert np.isclose(p2[0], 20) and p2[1] > 0  # and comes down into c
+
+
+def test_dissolving_between_straight_lines_makes_a_straight_line() -> None:
+    drawing = VectorDrawing()
+    a, b, c = (drawing.add_point(p) for p in [(0, 0), (5, 3), (10, 0)])
+    drawing.add_line(a, b)
+    drawing.add_line(b, c)
+    dissolve = dissolve_point(drawing, b)
+    History().push(dissolve.command)
+    assert not isinstance(dissolve.line, BezierCurve)
+    assert list(drawing.lines) == [dissolve.line] and set(drawing.points) == {a, c}
+
+
+def test_dissolving_a_two_curve_ring_makes_a_loop() -> None:
+    drawing = VectorDrawing()
+    a, b = drawing.add_point((0, 0)), drawing.add_point((10, 0))
+    there = drawing.add_curve(a, b, drawing.add_point((0, 6)), drawing.add_point((10, 6)))
+    back = drawing.add_curve(b, a, drawing.add_point((10, -6)), drawing.add_point((0, -6)))
+    polygon = drawing.add_polygon([[there, back]])
+    dissolve = dissolve_point(drawing, b)
+    History().push(dissolve.command)
+    assert dissolve.line.is_loop and dissolve.line.start is a
+    assert dissolve.polygons[polygon].outer == (dissolve.line,)
+    assert not dissolvable(drawing, a)  # just the loop through it now
+
+
+def test_only_a_point_two_lines_meet_at_dissolves() -> None:
+    drawing = VectorDrawing()
+    hub, a, b, c = (drawing.add_point(p) for p in [(0, 0), (10, 0), (0, 10), (-10, 0)])
+    for end in (a, b, c):
+        _curve(drawing, hub, end)
+    loop_end = drawing.add_point((30, 0))
+    drawing.add_curve(loop_end, loop_end, drawing.add_point((25, 5)), drawing.add_point((35, 5)))
+    p, q = drawing.add_point((50, 0)), drawing.add_point((60, 0))
+    drawing.add_line(p, q)
+    drawing.add_line(q, p)
+    lone = drawing.add_point((80, 80))
+    control = next(iter(drawing.controls_at(a)))
+
+    # a junction, an open end, a loop's, two straight lines' between the same points, no line's, a control point
+    for point in (hub, a, loop_end, q, lone, control):
+        assert not dissolvable(drawing, point)
+        with pytest.raises(ValueError):
+            dissolve_point(drawing, point)
