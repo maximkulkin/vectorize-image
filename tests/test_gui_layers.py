@@ -8,8 +8,6 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-pytest.importorskip("PySide6")
-
 from PySide6.QtCore import QEvent, QModelIndex, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QFocusEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402

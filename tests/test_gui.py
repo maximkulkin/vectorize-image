@@ -8,8 +8,6 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-pytest.importorskip("PySide6")
-
 import shiboken6  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402

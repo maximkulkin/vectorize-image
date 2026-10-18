@@ -5,24 +5,21 @@ Summary: Trace a two-tone raster image into an SVG using bezier curve fitting
 License: MIT
 Requires-Python: >=3.12
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: numpy>=1.22
 Requires-Dist: Pillow>=9.0
 Requires-Dist: psygnal>=0.11
+Requires-Dist: PySide6>=6.5
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
-Provides-Extra: gui
-Requires-Dist: PySide6>=6.5; extra == "gui"
+Dynamic: license-file
 
 # vectorize-image
 
 A tool that traces a two-tone (black/white) raster image — PNG, JPEG, etc. —
 into an SVG made of cubic bezier curves, using a real curve-fitting algorithm
-rather than just outlining pixels. Includes a CLI and an optional PySide6 GUI
-for interactively tuning the settings (see [GUI](#gui) below).
-
-```
-$ vectorize-image logo.png -o logo.svg
-```
+rather than just outlining pixels. It's a PySide6 desktop app for tracing an
+image by hand, on layers (see [GUI](#gui) below).
 
 ## Install
 
@@ -31,53 +28,12 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-This installs the `vectorize-image` command (and it's also runnable as
-`python -m vectorize_image`).
-
-## Usage
-
-```
-vectorize-image INPUT [-o OUTPUT] [options]
-```
-
-By default, the output path is the input filename with its extension
-replaced by `.svg`. Use `-o -` to write the SVG to stdout instead.
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--threshold` | auto (Otsu) | Grayscale cutoff in `[0, 255]`; pixels darker than this are ink. |
-| `--invert` | off | Treat *light* pixels as ink instead of dark ones. |
-| `--simplify-tolerance PX` | `1.0` | Douglas-Peucker tolerance for simplifying the traced pixel outline. |
-| `--corner-threshold DEGREES` | `45` | Turning angle above which a vertex is kept as a sharp corner instead of being smoothed into a curve. |
-| `--max-error PX` | `1.0` | Max allowed distance between the fitted bezier curves and the traced outline. Lower = more faithful, more curve segments. |
-| `--min-area PX2` | `2.0` | Discard traced regions smaller than this (speckle filtering). |
-| `--scale` | `1.0` | Scale factor applied to output coordinates. |
-| `--fill` | `black` | Fill color of the output shape. |
-| `--precision` | `2` | Decimal digits in output SVG coordinates. |
-
-Examples:
-
-```
-# Basic trace, auto threshold
-vectorize-image scan.png
-
-# White ink on a black background
-vectorize-image whiteboard.jpg --invert -o out.svg
-
-# Looser fit: fewer, smoother curves, less faithful to jagged pixel edges
-vectorize-image icon.png --max-error 2.5 --simplify-tolerance 1.5
-
-# Tighter fit: more curve segments, closer to the pixel outline
-vectorize-image icon.png --max-error 0.3 --simplify-tolerance 0.3
-```
+This installs the `vectorize-image` command.
 
 ## GUI
 
-A PySide6 desktop app is included for tracing an image by hand, on layers.
-
 ```
-pip install -e ".[gui]"
-vectorize-image-gui [optional/path/to/image.png]
+vectorize-image [optional/path/to/image.png]
 ```
 
 (or `python -m vectorize_image.gui.app`)
@@ -85,6 +41,13 @@ vectorize-image-gui [optional/path/to/image.png]
 Opening an image starts a fresh document of two layers: **Image**, holding
 the picture, and **Drawing** above it — an empty vector drawing, and the
 current layer, where the tools work.
+
+**File → Import SVG** (Ctrl+I) adds an SVG file's shapes — paths, rects,
+circles, ellipses, polygons, polylines and lines, with their transforms —
+as a vector drawing in a new layer above the current one, named after the
+file. Each filled shape becomes a polygon (its subpaths its rings), and an
+unfilled one just its lines; colors, strokes, text, images and `<use>`
+references aren't brought in. Like any layer change, it's one undo step.
 
 ### Layers
 
@@ -125,10 +88,8 @@ A click-to-place "magnetic pen", drawing in the current layer:
    open end later continues right from there. A starting point that never
    got a curve leaves nothing behind.
 
-The **Edge Detection** settings in the sidebar decide what counts as ink in
-the image, and so where the edges Pen snaps to are: the **threshold** (Auto
-picks one with Otsu's method) and **invert** (for light ink on a dark
-background).
+The edges Pen snaps to are between the image's dark ink and its light
+background, split at a threshold picked with Otsu's method.
 
 #### Edit
 
@@ -152,10 +113,17 @@ Three more pick *how* a click or drag builds the selection:
 - **Box Select** — **drag a rectangle**; on release, everything it touches
   is selected (a curve or polygon only needs to pass through the box).
   Plain drag replaces the selection; Shift-drag adds to it.
-- **Paint Select** — a circle of adjustable radius (**Brush radius** in the
-  sidebar) follows the cursor; **press and drag** to select everything it
+- **Paint Select** — a circle follows the cursor; **press and drag** to select everything it
   touches as you sweep it around. Without Shift, a new stroke starts from
   an empty selection; with Shift, it adds to it.
+
+**G** grabs the selection, as in Blender — whole drawings and images in
+object mode too. It switches to Move, and what's selected (highlighted in
+white) moves with the cursor straight away, no button held: **click** to
+place it there, as one undo step, or **Esc** to put it back. While it's
+moving, **X** or **Y** keeps it to that axis — shown by a line along it
+(red for X, green for Y) through the middle of what's moving; pressing the
+same key again frees it. (Clicking the Move button on the toolbar only switches tools.)
 
 **Esc** cancels whatever's in progress (a move drag snaps back, a box is
 abandoned, a paint stroke reverts), or else clears the selection.
@@ -165,20 +133,26 @@ removes what's selected: points take the curves through them along; curves
 leave their ends; polygons take their outline, except what a neighbouring
 polygon shares.
 
+**Edit → Flip Horizontally** (`H`) and **Flip Vertically** (`V`), also on
+the toolbar, mirror the selection across the middle of the box around it,
+as one undo step — in object mode whole drawings and images (an image's
+pixels too), in edit mode points, curves or polygons. Selected points take
+their control points along, so flipping a single point mirrors the curves'
+tangents at it.
+
 ### Undo/redo
 
-Every change to the document — a curve drawn, a move, a delete, clearing
-a drawing, and adding, deleting, renaming or moving a layer — is one step
+Every change to the document — a curve drawn, a move, a delete,
+and adding, deleting, renaming or moving a layer — is one step
 on an undo stack, via **Edit → Undo** / **Redo** (`Ctrl+Z` /
 `Ctrl+Shift+Z`, also on the toolbar). The menu names the step, e.g.
 "Undo Draw Curve".
 
 ### Display
 
-**Vector opacity** and **Overlay color** set how polygons are filled, over
-the image; check **Show lines and points** to also draw every drawing's
-curves and points (the current layer's always show while drawing or
-editing). Lines and points keep a constant on-screen size at any zoom.
+Polygons are filled half-transparent red, over the image — and red is
+what Export SVG fills them with. The current layer's curves and points
+show while drawing or editing it, at a constant on-screen size at any zoom.
 
 ### Canvas navigation
 
@@ -194,7 +168,7 @@ Zoom is clamped to a sane range (0.05x–40x) either way. Keyboard shortcuts
 apply once the canvas has focus, which it grabs automatically after loading
 an image.
 
-Use **File → Save Vector as SVG** to export the polygons of every visible
+Use **File → Export SVG** to export the polygons of every visible
 layer.
 
 ## How it works
@@ -203,7 +177,7 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
 
 1. **Binarize** (`binarize.py`) — load the image, flatten transparency onto
    white, convert to grayscale, and threshold it into a black/white bitmap.
-   If no `--threshold` is given, the cutoff is chosen automatically with
+   If no `threshold` is given, the cutoff is chosen automatically with
    **Otsu's method** (maximizing between-class variance over the histogram).
 
 2. **Trace** (`tracing.py`) — walk the grid of corners *between* pixels
@@ -220,7 +194,7 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
 3. **Simplify & find corners** (`simplify.py`) — reduce the staircase-shaped
    traced polygon with the **Douglas-Peucker algorithm**, then compute the
    turning angle at each remaining vertex. Vertices turning sharper than
-   `--corner-threshold` are treated as true corners; the closed polygon is
+   `corner_threshold_deg` are treated as true corners; the closed polygon is
    cut into open point-chains at those corners so each chain can be curve-fit
    independently, which preserves an honest cusp wherever chains meet. If a
    shape has no sharp corners at all (e.g. a circle), one seam is forced at
@@ -235,7 +209,7 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
    - Fit one cubic bezier by least squares (holding the endpoints fixed and
      using estimated tangent directions, which reduces to a small 2x2 linear
      system for the two interior control points).
-   - If the fit's max error exceeds `--max-error`, refine the parameterization
+   - If the fit's max error exceeds `max_error`, refine the parameterization
      with a few rounds of Newton-Raphson root-finding and refit.
    - If it's still not good enough, split the chain at its worst point and
      recursively fit each half.
@@ -275,6 +249,6 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
 ## Tests
 
 ```
-pip install -e ".[dev,gui]"  # gui is optional; its tests auto-skip if PySide6 isn't installed
+pip install -e ".[dev]"
 pytest
 ```

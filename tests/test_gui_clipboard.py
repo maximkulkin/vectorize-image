@@ -3,11 +3,8 @@
 import os
 
 import numpy as np
-import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-pytest.importorskip("PySide6")
 
 from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402

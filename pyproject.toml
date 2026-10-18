@@ -13,17 +13,14 @@ dependencies = [
     "numpy>=1.22",
     "Pillow>=9.0",
     "psygnal>=0.11",
+    "PySide6>=6.5",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
-gui = ["PySide6>=6.5"]
-
-[project.scripts]
-vectorize-image = "vectorize_image.cli:main"
 
 [project.gui-scripts]
-vectorize-image-gui = "vectorize_image.gui.app:main"
+vectorize-image = "vectorize_image.gui.app:main"
 
 [tool.setuptools]
 packages = ["vectorize_image", "vectorize_image.document", "vectorize_image.gui"]
@@ -41,7 +38,7 @@ typeCheckingMode = "recommended"
 # numpy's indexing and most of its functions are typed as returning Any, so
 # this would flag nearly every array expression.
 reportAny = false
-# Qt and argparse builder calls (addWidget, addAction, add_argument, ...)
+# Qt builder calls (addWidget, addAction, ...)
 # return values that are routinely and intentionally ignored.
 reportUnusedCallResult = false
 # MainWindow builds its widgets in _build_* helpers called from __init__,

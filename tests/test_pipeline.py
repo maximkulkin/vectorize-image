@@ -1,9 +1,7 @@
 from pathlib import Path
 
-import pytest
 from PIL import Image, ImageDraw
 
-from vectorize_image import cli
 from vectorize_image.pipeline import vectorize_image
 
 
@@ -102,35 +100,3 @@ def test_scale_option_scales_the_viewbox(tmp_path: Path) -> None:
     svg = vectorize_image(str(path), scale=2.0)
 
     assert 'width="120"' in svg and 'height="120"' in svg
-
-
-def test_cli_writes_svg_file(tmp_path: Path) -> None:
-    img_path = tmp_path / "shape.png"
-    img = Image.new("L", (40, 40), 255)
-    ImageDraw.Draw(img).rectangle([5, 5, 35, 35], fill=0)
-    img.save(img_path)
-    out_path = tmp_path / "out.svg"
-
-    rc = cli.main([str(img_path), "-o", str(out_path)])
-
-    assert rc == 0
-    assert out_path.exists()
-    assert "<svg" in out_path.read_text()
-
-
-def test_cli_default_output_path_replaces_extension(tmp_path: Path) -> None:
-    img_path = tmp_path / "shape.png"
-    img = Image.new("L", (40, 40), 255)
-    ImageDraw.Draw(img).rectangle([5, 5, 35, 35], fill=0)
-    img.save(img_path)
-
-    rc = cli.main([str(img_path)])
-
-    assert rc == 0
-    assert (tmp_path / "shape.svg").exists()
-
-
-def test_cli_errors_cleanly_on_missing_input(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    rc = cli.main([str(tmp_path / "does_not_exist.png")])
-    assert rc == 1
-    assert "not found" in capsys.readouterr().err

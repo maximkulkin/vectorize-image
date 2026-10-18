@@ -2,12 +2,8 @@
 
 A tool that traces a two-tone (black/white) raster image — PNG, JPEG, etc. —
 into an SVG made of cubic bezier curves, using a real curve-fitting algorithm
-rather than just outlining pixels. Includes a CLI and an optional PySide6 GUI
-for interactively tuning the settings (see [GUI](#gui) below).
-
-```
-$ vectorize-image logo.png -o logo.svg
-```
+rather than just outlining pixels. It's a PySide6 desktop app for tracing an
+image by hand, on layers (see [GUI](#gui) below).
 
 ## Install
 
@@ -16,53 +12,12 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-This installs the `vectorize-image` command (and it's also runnable as
-`python -m vectorize_image`).
-
-## Usage
-
-```
-vectorize-image INPUT [-o OUTPUT] [options]
-```
-
-By default, the output path is the input filename with its extension
-replaced by `.svg`. Use `-o -` to write the SVG to stdout instead.
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--threshold` | auto (Otsu) | Grayscale cutoff in `[0, 255]`; pixels darker than this are ink. |
-| `--invert` | off | Treat *light* pixels as ink instead of dark ones. |
-| `--simplify-tolerance PX` | `1.0` | Douglas-Peucker tolerance for simplifying the traced pixel outline. |
-| `--corner-threshold DEGREES` | `45` | Turning angle above which a vertex is kept as a sharp corner instead of being smoothed into a curve. |
-| `--max-error PX` | `1.0` | Max allowed distance between the fitted bezier curves and the traced outline. Lower = more faithful, more curve segments. |
-| `--min-area PX2` | `2.0` | Discard traced regions smaller than this (speckle filtering). |
-| `--scale` | `1.0` | Scale factor applied to output coordinates. |
-| `--fill` | `black` | Fill color of the output shape. |
-| `--precision` | `2` | Decimal digits in output SVG coordinates. |
-
-Examples:
-
-```
-# Basic trace, auto threshold
-vectorize-image scan.png
-
-# White ink on a black background
-vectorize-image whiteboard.jpg --invert -o out.svg
-
-# Looser fit: fewer, smoother curves, less faithful to jagged pixel edges
-vectorize-image icon.png --max-error 2.5 --simplify-tolerance 1.5
-
-# Tighter fit: more curve segments, closer to the pixel outline
-vectorize-image icon.png --max-error 0.3 --simplify-tolerance 0.3
-```
+This installs the `vectorize-image` command.
 
 ## GUI
 
-A PySide6 desktop app is included for tracing an image by hand, on layers.
-
 ```
-pip install -e ".[gui]"
-vectorize-image-gui [optional/path/to/image.png]
+vectorize-image [optional/path/to/image.png]
 ```
 
 (or `python -m vectorize_image.gui.app`)
@@ -206,7 +161,7 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
 
 1. **Binarize** (`binarize.py`) — load the image, flatten transparency onto
    white, convert to grayscale, and threshold it into a black/white bitmap.
-   If no `--threshold` is given, the cutoff is chosen automatically with
+   If no `threshold` is given, the cutoff is chosen automatically with
    **Otsu's method** (maximizing between-class variance over the histogram).
 
 2. **Trace** (`tracing.py`) — walk the grid of corners *between* pixels
@@ -223,7 +178,7 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
 3. **Simplify & find corners** (`simplify.py`) — reduce the staircase-shaped
    traced polygon with the **Douglas-Peucker algorithm**, then compute the
    turning angle at each remaining vertex. Vertices turning sharper than
-   `--corner-threshold` are treated as true corners; the closed polygon is
+   `corner_threshold_deg` are treated as true corners; the closed polygon is
    cut into open point-chains at those corners so each chain can be curve-fit
    independently, which preserves an honest cusp wherever chains meet. If a
    shape has no sharp corners at all (e.g. a circle), one seam is forced at
@@ -238,7 +193,7 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
    - Fit one cubic bezier by least squares (holding the endpoints fixed and
      using estimated tangent directions, which reduces to a small 2x2 linear
      system for the two interior control points).
-   - If the fit's max error exceeds `--max-error`, refine the parameterization
+   - If the fit's max error exceeds `max_error`, refine the parameterization
      with a few rounds of Newton-Raphson root-finding and refit.
    - If it's still not good enough, split the chain at its worst point and
      recursively fit each half.
@@ -278,6 +233,6 @@ The pipeline has six stages (see `vectorize_image/pipeline.py`):
 ## Tests
 
 ```
-pip install -e ".[dev,gui]"  # gui is optional; its tests auto-skip if PySide6 isn't installed
+pip install -e ".[dev]"
 pytest
 ```
