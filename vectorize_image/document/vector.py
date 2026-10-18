@@ -291,6 +291,36 @@ class VectorDrawing:
         """The polygons that `line` is part of the boundary of."""
         return self._polygons_on[line].keys()
 
+    def fragment(self, elements: Iterable[Element]) -> Fragment:
+        """The elements with everything they're made from -- each line's
+        points, each polygon's lines and theirs -- and where those points
+        are: a fragment that's whole on its own, so a `duplicate` of it can
+        go into any drawing. Leaves the drawing as it is. Raises KeyError
+        if any of `elements` isn't in it."""
+        points: dict[Point, None] = {}
+        lines: dict[Line, None] = {}
+        polygons: dict[Polygon, None] = {}
+        for element in elements:
+            if element not in self:
+                raise KeyError(element)
+            match element:
+                case Point():
+                    points[element] = None
+                case Line():
+                    lines[element] = None
+                case Polygon():
+                    polygons[element] = None
+                    lines.update(dict.fromkeys(element.lines))
+        for line in lines:
+            points.update(dict.fromkeys(line.points))
+        return Fragment({point: self._positions[point] for point in points}, list(lines), list(polygons))
+
+    def copy(self) -> VectorDrawing:
+        """A new drawing of the same shapes, made of elements of its own."""
+        drawing = VectorDrawing()
+        drawing.insert(duplicate(self.fragment([*self.points, *self.lines, *self.polygons])))
+        return drawing
+
     # --------------------------------------------------------- building
 
     def add_point(self, position: PointLike) -> Point:
@@ -449,6 +479,31 @@ class VectorDrawing:
         for line in lines:
             polygons.update(dict.fromkeys(self._polygons_on[line]))
         self.reshaped.emit(frozenset([*points, *lines, *polygons]))
+
+
+def duplicate(fragment: Fragment) -> Fragment:
+    """A copy of a fragment made of elements of its own: a new point at
+    each of its points' positions, and new lines and polygons made from
+    the new points and lines -- the same shapes, ready to go into a drawing
+    the originals may be in too. Whatever its lines or polygons use from
+    outside the fragment, the copies use as well."""
+    points = {point: Point() for point in fragment.points}
+
+    def new(point: Point) -> Point:
+        return points.get(point, point)
+
+    lines: dict[Line, Line] = {}
+    for line in fragment.lines:
+        if isinstance(line, BezierCurve):
+            lines[line] = BezierCurve(new(line.start), new(line.end), new(line.control1), new(line.control2))
+        else:
+            lines[line] = Line(new(line.start), new(line.end))
+    polygons = [Polygon([[lines.get(line, line) for line in ring] for ring in polygon.rings]) for polygon in fragment.polygons]
+    return Fragment(
+        {points[point]: position for point, position in fragment.points.items()},
+        list(lines.values()),
+        polygons,
+    )
 
 
 def shapes_fragment(shapes: Iterable[Shape]) -> tuple[Fragment, list[Polygon]]:

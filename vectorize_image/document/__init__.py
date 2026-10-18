@@ -8,12 +8,23 @@ Qt-free. Everything that shows or acts on the document subscribes to the
 signals of its parts rather than being told to refresh.
 """
 
-from .document import Document, InsertLayer, Item, Layer, MoveItems, MoveLayer, RemoveLayer, RenameLayer
+from .document import (
+    Document,
+    InsertItems,
+    InsertLayer,
+    Item,
+    Layer,
+    MoveItems,
+    MoveLayer,
+    RemoveItems,
+    RemoveLayer,
+    RenameLayer,
+)
 from .history import Batch, Command, History, Insert, Remove, Translate
 from .observable_list import ObservableList
 from .raster import RasterImage
 from .selection import Selectable, Selection
-from .vector import BezierCurve, Element, Fragment, Line, Point, Polygon, VectorDrawing
+from .vector import BezierCurve, Element, Fragment, Line, Point, Polygon, VectorDrawing, duplicate
 
 __all__ = [
     "Batch",
@@ -24,6 +35,7 @@ __all__ = [
     "Fragment",
     "History",
     "Insert",
+    "InsertItems",
     "InsertLayer",
     "Item",
     "Layer",
@@ -35,10 +47,12 @@ __all__ = [
     "Polygon",
     "RasterImage",
     "Remove",
+    "RemoveItems",
     "RemoveLayer",
     "RenameLayer",
     "Selectable",
     "Selection",
     "Translate",
     "VectorDrawing",
+    "duplicate",
 ]

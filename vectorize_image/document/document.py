@@ -19,7 +19,18 @@ from .raster import RasterImage
 from .selection import Selection
 from .vector import VectorDrawing
 
-__all__ = ["Document", "InsertLayer", "Item", "Layer", "MoveItems", "MoveLayer", "RemoveLayer", "RenameLayer"]
+__all__ = [
+    "Document",
+    "InsertItems",
+    "InsertLayer",
+    "Item",
+    "Layer",
+    "MoveItems",
+    "MoveLayer",
+    "RemoveItems",
+    "RemoveLayer",
+    "RenameLayer",
+]
 
 class Document:
     """What's being worked on, and the source of truth for it: everything
@@ -239,6 +250,48 @@ class RemoveLayer(Command):
         self.document.layers.insert(self._index, self.layer)
         if self._was_current:
             self.document.current_layer = self.layer
+
+
+class InsertItems(Command):
+    """Put items into a layer, in order, starting at `index` (bottom up);
+    undo takes them out again."""
+
+    def __init__(self, layer: Layer, items: Iterable[Item], index: int, text: str = "Add") -> None:
+        super().__init__(text)
+        self.layer: Final[Layer] = layer
+        self.items: Final[tuple[Item, ...]] = tuple(items)
+        self.index: Final[int] = index
+
+    @override
+    def redo(self) -> None:
+        for offset, item in enumerate(self.items):
+            self.layer.items.insert(self.index + offset, item)
+
+    @override
+    def undo(self) -> None:
+        for item in reversed(self.items):
+            self.layer.items.remove(item)
+
+
+class RemoveItems(Command):
+    """Take items out of a layer; undo puts each back where it was."""
+
+    def __init__(self, layer: Layer, items: Iterable[Item], text: str = "Delete") -> None:
+        super().__init__(text)
+        self.layer: Final[Layer] = layer
+        self.items: Final[tuple[Item, ...]] = tuple(items)
+        self._removed: list[tuple[int, Item]] = []  # (index, item), bottom up
+
+    @override
+    def redo(self) -> None:
+        self._removed = sorted(((self.layer.items.index(item), item) for item in self.items), key=lambda entry: entry[0])
+        for _index, item in reversed(self._removed):
+            self.layer.items.remove(item)
+
+    @override
+    def undo(self) -> None:
+        for index, item in self._removed:  # bottom up, so each lands where it was
+            self.layer.items.insert(index, item)
 
 
 class MoveItems(Command):

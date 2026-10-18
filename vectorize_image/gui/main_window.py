@@ -13,7 +13,8 @@ as in Blender, goes into it and back out to object mode.
 
 The document is the source of truth: the canvas and the Layers panel show
 it, every change to it goes through its undo history, and Save exports
-what's in it.
+what's in it. Cut, Copy and Paste work on the selection, in either mode,
+through a clipboard of the app's own (see clipboard.py).
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import binarize, simplify, svgread, svgwrite, tracing
+from ..clipboard import Clipboard
 from ..document import Document, Layer, RasterImage, Remove, VectorDrawing
 from ..signals import disconnect
 from ..typedefs import ElementMode, Shape
@@ -101,6 +103,9 @@ class MainWindow(QMainWindow):
     save_action: QAction
     undo_action: QAction
     redo_action: QAction
+    cut_action: QAction
+    copy_action: QAction
+    paste_action: QAction
     delete_action: QAction
     trace_tool_action: QAction
     edit_tool_action: QAction
@@ -157,6 +162,8 @@ class MainWindow(QMainWindow):
         self.document.current_layer_changed.connect(self._on_document_changed)
         self.document.layers.inserted.connect(self._on_layer_inserted)
         self.document.layers.removed.connect(self._on_layer_removed)
+        self.clipboard: Clipboard = Clipboard()
+        self.clipboard.changed.connect(self._update_selection_actions)
 
         self._debounce: QTimer = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -207,6 +214,21 @@ class MainWindow(QMainWindow):
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.setEnabled(False)
         self.redo_action.triggered.connect(self.document.history.redo)
+
+        self.cut_action = QAction("Cu&t", self)
+        self.cut_action.setShortcut(QKeySequence.StandardKey.Cut)
+        self.cut_action.setEnabled(False)
+        self.cut_action.triggered.connect(self._cut)
+
+        self.copy_action = QAction("&Copy", self)
+        self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self.copy_action.setEnabled(False)
+        self.copy_action.triggered.connect(self._copy)
+
+        self.paste_action = QAction("&Paste", self)
+        self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_action.setEnabled(False)
+        self.paste_action.triggered.connect(self._paste)
 
         self.delete_action = QAction("&Delete Selection", self)
         self.delete_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Delete), QKeySequence(Qt.Key.Key_Backspace)])
@@ -335,6 +357,9 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
         edit_menu.addSeparator()
+        edit_menu.addAction(self.cut_action)
+        edit_menu.addAction(self.copy_action)
+        edit_menu.addAction(self.paste_action)
         edit_menu.addAction(self.delete_action)
 
         view_menu = self.menuBar().addMenu("&View")
@@ -687,7 +712,7 @@ class MainWindow(QMainWindow):
         tool.activate()
         self.canvas.set_interaction_handler(tool if tool.captures_mouse else None)
         self._update_paint_radius_visibility()
-        self._update_delete_action()
+        self._update_selection_actions()
         self._update_status()
 
     def _set_selection_actions_visible(self, visible: bool) -> None:
@@ -717,11 +742,11 @@ class MainWindow(QMainWindow):
         self.undo_action.setText(_action_text("&Undo", history.undo_text()))
         self.redo_action.setText(_action_text("&Redo", history.redo_text()))
         self._update_save_enabled()
-        self._update_delete_action()
+        self._update_selection_actions()
         self._update_status()
 
     def _on_selection_changed(self) -> None:
-        self._update_delete_action()
+        self._update_selection_actions()
         self._update_status()
 
     def _on_layer_inserted(self, _index: int, layer: Layer) -> None:
@@ -730,11 +755,34 @@ class MainWindow(QMainWindow):
     def _on_layer_removed(self, _index: int, layer: Layer) -> None:
         disconnect(layer.changed, self._update_save_enabled)
 
-    def _update_delete_action(self) -> None:
+    def _update_selection_actions(self) -> None:
+        """Enable what can be done with the selection now. Cut, Copy and
+        Paste work on it only while a select tool shows it -- not with Pen."""
         self.delete_action.setEnabled(self.tool.can_delete())
+        selection = self.document.selection
+        selecting = self._selecting()
+        can_copy = selecting and self.clipboard.can_copy(selection)
+        self.cut_action.setEnabled(can_copy)
+        self.copy_action.setEnabled(can_copy)
+        self.paste_action.setEnabled(selecting and self.clipboard.can_paste(selection))
+
+    def _selecting(self) -> bool:
+        return self.tool is self.object_tool or self.tool is self.edit_tool
 
     def _delete_selection(self) -> None:
         self.tool.delete_selection()
+
+    def _cut(self) -> None:
+        if self._selecting():
+            self.clipboard.cut(self.document)
+
+    def _copy(self) -> None:
+        if self._selecting():
+            self.clipboard.copy(self.document.selection)
+
+    def _paste(self) -> None:
+        if self._selecting():
+            self.clipboard.paste(self.document)
 
     def _update_save_enabled(self) -> None:
         self.save_action.setEnabled(

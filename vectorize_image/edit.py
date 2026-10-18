@@ -134,3 +134,41 @@ def elements_to_delete(drawing: VectorDrawing, mode: ElementMode, items: Iterabl
             return frozenset([*polygons, *lines, *ends])
         case _:
             assert_never(mode)
+
+
+def elements_to_copy(drawing: VectorDrawing, mode: ElementMode, items: Iterable[Element]) -> frozenset[Element]:
+    """What copying the selection takes -- the selected elements, and
+    whatever they span -- before everything they're made from comes along
+    too (see VectorDrawing.fragment):
+
+    - points: the selected end points, the lines between two of them, and
+      the polygons all of whose lines those are.
+    - lines: the selected lines, and the polygons all of whose lines are
+      selected.
+    - polygons: the selected polygons.
+    """
+    items = frozenset(items)
+    match mode:
+        case "points":
+            points = {item for item in items if isinstance(item, Point) and not is_control(drawing, item)}
+            lines = {
+                line for point in points for line in drawing.lines_at(point) if line.start in points and line.end in points
+            }
+            return frozenset([*points, *lines, *_polygons_within(drawing, lines)])
+        case "lines":
+            lines = {item for item in items if isinstance(item, Line)}
+            return frozenset([*lines, *_polygons_within(drawing, lines)])
+        case "polygons":
+            return frozenset(item for item in items if isinstance(item, Polygon))
+        case _:
+            assert_never(mode)
+
+
+def _polygons_within(drawing: VectorDrawing, lines: set[Line]) -> set[Polygon]:
+    """The polygons bounded by `lines` alone."""
+    return {
+        polygon
+        for line in lines
+        for polygon in drawing.polygons_on(line)
+        if all(other in lines for other in polygon.lines)
+    }
