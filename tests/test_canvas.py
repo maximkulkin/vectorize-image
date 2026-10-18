@@ -25,6 +25,7 @@ from vectorize_image.gui.document_items import (  # noqa: E402
     VectorDrawingItem,
     VectorStyle,
 )
+from vectorize_image.gui.pan_zoom import PanZoom  # noqa: E402
 
 
 @pytest.fixture
@@ -326,7 +327,7 @@ def test_scene_distance_tracks_the_zoom(canvas: Canvas) -> None:
 
     canvas.zoom_in()
 
-    assert canvas.scene_distance(12.0) == pytest.approx(before / canvas.ZOOM_IN_FACTOR)
+    assert canvas.scene_distance(12.0) == pytest.approx(before / PanZoom.ZOOM_IN_FACTOR)
 
 
 # --------------------------------------------------------- editing decorations

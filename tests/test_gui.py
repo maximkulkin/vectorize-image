@@ -22,6 +22,7 @@ from vectorize_image.document import Insert, RasterImage, VectorDrawing  # noqa:
 from vectorize_image.document.vector import shapes_fragment  # noqa: E402
 from vectorize_image.gui.document_items import VectorDrawingItem  # noqa: E402
 from vectorize_image.gui.main_window import MainWindow  # noqa: E402
+from vectorize_image.gui.pan_zoom import PanZoom  # noqa: E402
 from vectorize_image.typedefs import Bezier  # noqa: E402
 
 
@@ -181,15 +182,20 @@ def test_save_svg_leaves_out_hidden_layers(window: MainWindow, donut_path: str, 
 # --------------------------------------------------------- pan & zoom
 
 
-def _wheel_event(pos: QPoint, angle_delta_y: int) -> QWheelEvent:
-    return QWheelEvent(
+# Navigation input goes through Qt's event delivery, not straight to the
+# view's handlers: it's PanZoom's, an event filter on the canvas.
+
+
+def _wheel(view: QGraphicsView, pos: QPoint, angle_delta_y: int) -> None:
+    event = QWheelEvent(
         QPointF(pos), QPointF(pos), QPoint(0, 0), QPoint(0, angle_delta_y),
         Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False,
     )
+    QApplication.sendEvent(view.viewport(), event)
 
 
-def _key_event(key: int) -> QKeyEvent:
-    return QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+def _key(view: QGraphicsView, key: Qt.Key) -> None:
+    QApplication.sendEvent(view, QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
 
 
 def _pixel_error(view: QGraphicsView, scene_point_before: QPointF, viewport_pos: QPoint) -> float:
@@ -218,7 +224,7 @@ def test_wheel_zoom_anchors_on_the_cursor_point(window: MainWindow, donut_path: 
 
     for viewport_pos, angle in [(QPoint(300, 250), 120), (QPoint(600, 500), 120), (QPoint(300, 250), -120)]:
         scene_before = view.mapToScene(viewport_pos)
-        view.wheelEvent(_wheel_event(viewport_pos, angle))
+        _wheel(view, viewport_pos, angle)
         QApplication.processEvents()
         assert _pixel_error(view, scene_before, viewport_pos) < 3.0
 
@@ -249,11 +255,11 @@ def test_zoom_clamps_to_min_and_max_scale(window: MainWindow, donut_path: str) -
 
     for _ in range(60):
         view.zoom_in()
-    assert view.transform().m11() == pytest.approx(view.MAX_SCALE)
+    assert view.transform().m11() == pytest.approx(PanZoom.MAX_SCALE)
 
     for _ in range(120):
         view.zoom_out()
-    assert view.transform().m11() == pytest.approx(view.MIN_SCALE)
+    assert view.transform().m11() == pytest.approx(PanZoom.MIN_SCALE)
 
 
 def test_arrow_keys_pan_the_view(window: MainWindow, donut_path: str) -> None:
@@ -267,16 +273,16 @@ def test_arrow_keys_pan_the_view(window: MainWindow, donut_path: str) -> None:
     h, v = view.horizontalScrollBar(), view.verticalScrollBar()
     start = (h.value(), v.value())
 
-    view.keyPressEvent(_key_event(Qt.Key.Key_Right))
-    assert (h.value(), v.value()) == (start[0] + view.PAN_STEP, start[1])
+    _key(view, Qt.Key.Key_Right)
+    assert (h.value(), v.value()) == (start[0] + PanZoom.PAN_STEP, start[1])
 
-    view.keyPressEvent(_key_event(Qt.Key.Key_Left))
+    _key(view, Qt.Key.Key_Left)
     assert (h.value(), v.value()) == start
 
-    view.keyPressEvent(_key_event(Qt.Key.Key_Down))
-    assert (h.value(), v.value()) == (start[0], start[1] + view.PAN_STEP)
+    _key(view, Qt.Key.Key_Down)
+    assert (h.value(), v.value()) == (start[0], start[1] + PanZoom.PAN_STEP)
 
-    view.keyPressEvent(_key_event(Qt.Key.Key_Up))
+    _key(view, Qt.Key.Key_Up)
     assert (h.value(), v.value()) == start
 
 
@@ -284,20 +290,24 @@ def _mouse_event(kind: QEvent.Type, pos: QPoint, button: Qt.MouseButton, buttons
     return QMouseEvent(kind, QPointF(pos), QPointF(pos), button, buttons, Qt.KeyboardModifier.NoModifier)
 
 
+def _send_mouse(
+    view: QGraphicsView, kind: QEvent.Type, pos: QPoint, button: Qt.MouseButton, buttons: Qt.MouseButton
+) -> None:
+    QApplication.sendEvent(view.viewport(), _mouse_event(kind, pos, button, buttons))
+
+
 def _middle_press(view: QGraphicsView, pos: QPoint) -> None:
     middle = Qt.MouseButton.MiddleButton
-    view.mousePressEvent(_mouse_event(QEvent.Type.MouseButtonPress, pos, middle, middle))
+    _send_mouse(view, QEvent.Type.MouseButtonPress, pos, middle, middle)
 
 
 def _middle_move(view: QGraphicsView, pos: QPoint) -> None:
     middle = Qt.MouseButton.MiddleButton
-    view.mouseMoveEvent(_mouse_event(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, middle))
+    _send_mouse(view, QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, middle)
 
 
 def _middle_release(view: QGraphicsView, pos: QPoint) -> None:
-    view.mouseReleaseEvent(
-        _mouse_event(QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.MiddleButton, Qt.MouseButton.NoButton)
-    )
+    _send_mouse(view, QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.MiddleButton, Qt.MouseButton.NoButton)
 
 
 def test_middle_drag_pans_the_view(window: MainWindow, donut_path: str) -> None:
@@ -322,9 +332,7 @@ def test_middle_drag_pans_the_view(window: MainWindow, donut_path: str) -> None:
     _middle_release(view, QPoint(280, 270))
 
     # Moving after the release no longer pans.
-    view.mouseMoveEvent(
-        _mouse_event(QEvent.Type.MouseMove, QPoint(400, 400), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
-    )
+    _send_mouse(view, QEvent.Type.MouseMove, QPoint(400, 400), Qt.MouseButton.NoButton, Qt.MouseButton.NoButton)
     assert (h.value(), v.value()) == (start[0] + 20, start[1] - 20)
 
 
@@ -335,14 +343,14 @@ def test_middle_drag_blocks_zoom_until_released(window: MainWindow, donut_path: 
     pos = QPoint(300, 250)
 
     _middle_press(view, pos)
-    view.wheelEvent(_wheel_event(pos, 120))
+    _wheel(view, pos, 120)
     view.zoom_in()
     view.zoom_out()
     assert view.transform().m11() == scale
     _middle_release(view, pos)
 
-    view.wheelEvent(_wheel_event(pos, 120))
-    assert view.transform().m11() == pytest.approx(scale * view.ZOOM_IN_FACTOR)
+    _wheel(view, pos, 120)
+    assert view.transform().m11() == pytest.approx(scale * PanZoom.ZOOM_IN_FACTOR)
 
 
 def test_middle_drag_shows_a_closed_hand_and_restores_the_cursor(window: MainWindow, donut_path: str) -> None:
