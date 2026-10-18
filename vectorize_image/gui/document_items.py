@@ -37,19 +37,18 @@ from ..edit import controls_shown
 from ..signals import disconnect
 from ..typedefs import Bezier, PointLike, Shape
 
-LINE_COLOR = QColor(0, 230, 118)
+LINE_COLOR = QColor(211, 211, 211)  # a light grey
 DANGLING_COLOR = QColor(255, 87, 34)  # a point at most one line ends at: the open end of a chain
 INTERNAL_COLOR = QColor(0, 122, 255)  # a point two or more lines end at
 CONTROL_COLOR = QColor(171, 71, 188)  # distinct from the end points' blue/orange
 HANDLE_LINE_COLOR = QColor(160, 160, 160)
-SELECTION_COLOR = QColor(33, 150, 243)
+SELECTION_COLOR = QColor(204, 153, 0)  # a dark yellow
 GRAB_COLOR = QColor(255, 255, 255)  # what a grab (G, see tools.MoveTool.start_grab) is moving
 
 LINE_WIDTH_PX = 2.2
 POINT_RADIUS_PX = 4.0
 CONTROL_RADIUS_PX = 3.0
 SELECTION_MARKER_PAD_PX = 3.0
-SELECTED_FILL_LIGHTER = 140  # how much brighter (QColor.lighter's percent) a selected object's fill is
 
 
 @dataclass(frozen=True)
@@ -76,9 +75,8 @@ class VectorView:
     what's selected and their handles (see edit.controls_shown).
 
     With `object_mode`, every drawing shows its lines, whatever the style
-    says, and those selected as whole objects stand out: their fill
-    brighter and their lines in SELECTION_COLOR -- in GRAB_COLOR while
-    a grab moves them.
+    says, and those selected as whole objects stand out by their lines,
+    in SELECTION_COLOR -- in GRAB_COLOR while a grab moves them.
     """
 
     style: VectorStyle = field(default_factory=VectorStyle)
@@ -441,8 +439,6 @@ class VectorDrawingItem(ModelItem):
         scale = painter.worldTransform().m11() or 1.0
 
         fill = QColor(view.style.fill_color)
-        if selected:
-            fill = fill.lighter(SELECTED_FILL_LIGHTER)
         fill.setAlphaF(view.style.fill_opacity)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)

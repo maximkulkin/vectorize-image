@@ -437,7 +437,7 @@ def test_object_mode_shows_every_drawings_lines(canvas: Canvas) -> None:
     assert _render(canvas, 50, 50).pixelColor(25, 25) == QColor(255, 255, 255)
 
 
-def test_a_selected_object_is_brighter_with_lines_in_the_selections_color(canvas: Canvas) -> None:
+def test_a_selected_object_has_lines_in_the_selections_color_and_its_fill_as_is(canvas: Canvas) -> None:
     drawing = _square_drawing()
     canvas.document.layers.append(layer := Layer("a", [drawing]))
     canvas.document.current_layer = layer
@@ -450,7 +450,7 @@ def test_a_selected_object_is_brighter_with_lines_in_the_selections_color(canvas
 
     after = _render(canvas, 50, 50)
     assert after.pixelColor(25, 10) == SELECTION_COLOR
-    assert after.pixelColor(25, 25).lightness() > before.pixelColor(25, 25).lightness()
+    assert after.pixelColor(25, 25) == before.pixelColor(25, 25)
 
 
 def test_a_grabbed_drawing_is_shown_as_such(canvas: Canvas) -> None:

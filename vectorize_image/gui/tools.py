@@ -1460,8 +1460,8 @@ class ObjectTool(SelectingTool[Item]):
     """Object mode -- the selection in "objects" mode: select whole items
     -- drawings and images -- of the current layer with one of the select
     sub-tools, and move them (with Tweak or Move). Every drawing shows
-    its lines, and a selected one its fill brighter and its lines in the
-    selection's color (see VectorView); a box around each selected image
+    its lines, and a selected one its lines in the selection's color
+    (see VectorView); a box around each selected image
     shows it's selected, following a move being dragged. Either way, in
     GRAB_COLOR while it's a grab."""
 

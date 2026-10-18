@@ -31,7 +31,7 @@ from .document_items import LINE_WIDTH_PX, POINT_RADIUS_PX, bezier_path
 PREVIEW_COLOR = QColor(255, 214, 0)
 ACTIVE_COLOR = QColor(255, 214, 0)  # where the Pen's chain goes on from; what a drag is moving
 SNAP_HIGHLIGHT_COLOR = QColor(0, 229, 255)
-HOVER_COLOR = SNAP_HIGHLIGHT_COLOR
+HOVER_COLOR = QColor(255, 241, 150)  # a light yellow
 AREA_SELECT_COLOR = QColor(33, 150, 243)
 GUIDE_BACKING_COLOR = QColor(255, 255, 255, 200)  # under the guides' dashes, to show on dark areas too
 AXIS_COLORS: dict[Axis, QColor] = {"x": QColor(255, 82, 82), "y": QColor(118, 255, 3)}  # as in Blender
