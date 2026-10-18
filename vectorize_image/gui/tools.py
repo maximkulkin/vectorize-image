@@ -46,6 +46,7 @@ from ..document import (
     Point,
     RasterImage,
     Remove,
+    RemoveItems,
     Selectable,
     Selection,
     Translate,
@@ -105,8 +106,9 @@ OBJECT_HINT = (
     "for more) or drag one to move it; or drag a box (B) or paint (C), "
     "then drag from anywhere with Move -- or press G to move them with the "
     "cursor and click to place them (X or Y keeps to one axis, Esc "
-    "cancels); H or V flips them horizontally or vertically. Press Tab to "
-    "edit the layer's drawing, and Tab again to come back. Esc deselects."
+    "cancels); H or V flips them horizontally or vertically, and Delete "
+    "removes them. Press Tab to edit the layer's drawing, and Tab again to "
+    "come back. Esc deselects."
 )
 TRACE_HINT = (
     "Click to place a point. Move the cursor to preview a curve snapped to "
@@ -677,7 +679,7 @@ class ItemTarget(MoveTarget[Item]):
     hovered drawing is highlighted along its lines, as edit mode does a
     hovered line; a hovered image, by a box around it."""
 
-    selected_hint: ClassVar[str] = "Tab to edit the current layer"
+    selected_hint: ClassVar[str] = "Delete to remove, Tab to edit the current layer"
 
     def __init__(self, document: Document, canvas: Canvas) -> None:
         super().__init__(document, canvas)
@@ -1491,6 +1493,28 @@ class ObjectTool(SelectingTool[Item]):
         super().deactivate()
         self._remove_overlays((self._selected_boxes,))
         self.canvas.set_object_mode(False)
+
+    def _deletable(self) -> list[Item]:
+        """The selected items, bottom to top."""
+        selection = self.document.selection
+        layer = selection.layer
+        if selection.mode != "objects" or layer is None:
+            return []
+        return [item for item in layer.items if item in selection.objects]
+
+    @override
+    def can_delete(self) -> bool:
+        return bool(self._deletable())
+
+    @override
+    def delete_selection(self) -> None:
+        """Take the selected items -- drawings and images -- out of the
+        current layer."""
+        items, layer = self._deletable(), self.document.selection.layer
+        if not items or layer is None:
+            return
+        noun = "Object" if len(items) == 1 else "Objects"
+        self.document.history.push(RemoveItems(layer, items, f"Delete {noun}"))
 
     def _flippable(self) -> list[Item]:
         """The selected items, less any empty drawings: there's nothing of them to flip."""

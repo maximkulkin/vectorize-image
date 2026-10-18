@@ -479,6 +479,40 @@ def test_h_flips_the_selected_drawings_in_their_box(window: MainWindow, diamond_
     assert np.allclose(drawing.position(corner), CORNERS[0])
 
 
+def test_delete_removes_the_selected_drawings(window: MainWindow, diamond_path: str) -> None:
+    _, drawing = _open_with_square(window, diamond_path)
+    other = _add_square(window, 100.0, 20.0)
+    kept = _add_square(window, 10.0, 10.0)
+    layer = _layer(window, "Drawing")
+    assert not window.delete_action.isEnabled()
+    click(window, 55, 55)
+    click(window, 110, 110, shift=True)
+    assert window.delete_action.isEnabled()
+
+    _shortcut(window, Qt.Key.Key_Delete)
+
+    assert drawing not in layer.items and other not in layer.items and kept in layer.items
+    assert not window.document.selection and not window.delete_action.isEnabled()
+    assert window.document.history.undo_text() == "Delete Objects"
+    window.undo_action.trigger()
+    assert list(layer.items) == [drawing, other, kept]
+
+
+def test_delete_removes_a_selected_image(window: MainWindow, diamond_path: str) -> None:
+    image, _ = _open_with_square(window, diamond_path)
+    layer = _layer(window, "Image")
+    window.document.current_layer = layer
+    click(window, 120, 120)
+    assert window.document.selection.objects == {image}
+
+    window.delete_action.trigger()
+
+    assert image not in layer.items
+    assert window.document.history.undo_text() == "Delete Object"
+    window.undo_action.trigger()
+    assert list(layer.items) == [image]
+
+
 def _lopsided_path(tmp_path: Path) -> str:
     """A 60 x 40 white image with a black block at its left edge."""
     path = tmp_path / "lopsided.png"
